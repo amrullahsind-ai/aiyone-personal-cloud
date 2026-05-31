@@ -9,8 +9,19 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <div class="drawer-overlay" id="drawerOverlay" aria-hidden="true"></div>
+  <header class="mobile-topbar">
+    <button class="icon-btn" id="menuToggle" aria-label="Buka menu">☰</button>
+    <div class="mobile-title">
+      <span class="eyebrow">Aiyone</span>
+      <strong id="mobilePageTitle">Dashboard</strong>
+    </div>
+    <button class="icon-btn" id="mobileInstallBtn" hidden title="Install">⬇</button>
+  </header>
+
   <div class="shell">
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar">
+      <button class="drawer-close" id="drawerClose" aria-label="Tutup menu">×</button>
       <div class="brand">
         <div class="brand-logo">A</div>
         <div>
@@ -20,10 +31,12 @@
       </div>
       <nav class="nav">
         <button class="nav-item active" data-view="dashboard">Dashboard</button>
+        <button class="nav-item" data-view="session">Sesi Belajar</button>
         <button class="nav-item" data-view="create">Upload / Create</button>
         <button class="nav-item" data-view="library">Library</button>
         <button class="nav-item" data-view="review">Review</button>
         <button class="nav-item" data-view="teach">Teaching Mode</button>
+        <button class="nav-item" data-view="analytics">Analytics</button>
         <button class="nav-item" data-view="settings">Settings</button>
       </nav>
       <div class="sync-card" id="syncCard">
@@ -88,6 +101,20 @@
             <button class="ghost small" data-jump="library">Lihat semua</button>
           </div>
           <div id="recentList" class="cards empty">Belum ada materi.</div>
+        </article>
+      </section>
+
+      <section class="view" id="session">
+        <article class="panel session-panel">
+          <div class="panel-head">
+            <div>
+              <span class="badge soft">Guided Learning Loop</span>
+              <h3>Sesi Belajar Terarah</h3>
+              <p class="muted">Aiyone menuntun alur: baca bagian kecil → active recall → flashcard → quiz → teaching mode.</p>
+            </div>
+            <select id="sessionMaterial" class="search"></select>
+          </div>
+          <div id="sessionBox" class="session-box empty">Pilih materi untuk mulai sesi belajar.</div>
         </article>
       </section>
 
@@ -166,6 +193,35 @@
         </article>
       </section>
 
+      <section class="view" id="analytics">
+        <div class="metrics analytics-metrics">
+          <article><span>Review Selesai</span><strong id="aReviews">0</strong></article>
+          <article><span>Akurasi Review</span><strong id="aAccuracy">0%</strong></article>
+          <article><span>Teaching Sessions</span><strong id="aTeaching">0</strong></article>
+          <article><span>Konsep Rawan</span><strong id="aWeak">0</strong></article>
+        </div>
+        <div class="grid two">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <h3>Konsep Paling Perlu Diperbaiki</h3>
+                <p class="muted">Diurutkan dari kartu yang due, retensi rendah, atau sering gagal.</p>
+              </div>
+            </div>
+            <div id="weakConceptList" class="stack empty">Belum ada data review.</div>
+          </article>
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <h3>Aktivitas Terbaru</h3>
+                <p class="muted">Ringkasan review dan teaching mode terakhir.</p>
+              </div>
+            </div>
+            <div id="activityList" class="stack empty">Belum ada aktivitas.</div>
+          </article>
+        </div>
+      </section>
+
       <section class="view" id="settings">
         <div class="grid two">
           <article class="panel">
@@ -212,6 +268,7 @@
               <button class="ghost" id="exportBtn">Export JSON</button>
               <label class="ghost import-label" for="importInput">Import JSON</label>
               <input id="importInput" type="file" accept="application/json" hidden />
+              <button class="ghost" id="syncLocalBtn">Pindahkan local → cloud</button>
               <button class="danger" id="resetBtn">Reset local data</button>
             </div>
           </article>
@@ -220,10 +277,10 @@
             <h3>Memory Engine</h3>
             <p class="muted">Smart streak hanya naik kalau skor review/quiz minimal 70%. Kartu sulit muncul lebih cepat, kartu mudah makin jauh.</p>
             <div class="mini-table">
-              <span>Again</span><b>10 menit</b>
-              <span>Hard</span><b>1 hari / interval pendek</b>
-              <span>Good</span><b>interval normal</b>
-              <span>Easy</span><b>interval panjang</b>
+              <span>Lupa</span><b>10 menit</b>
+              <span>Sulit</span><b>1 hari / interval pendek</b>
+              <span>Paham</span><b>interval normal</b>
+              <span>Mudah</span><b>interval panjang</b>
             </div>
           </article>
         </div>
@@ -240,14 +297,26 @@
       </div>
       <div class="card-actions">
         <button class="ghost small open">Buka</button>
+        <button class="primary small session-start">Sesi</button>
         <button class="ghost small quiz">Quiz</button>
         <button class="danger small del">Hapus</button>
       </div>
     </article>
   </template>
 
+  <div class="quiz-modal" id="quizModal" aria-hidden="true">
+    <div class="quiz-modal-card" id="quizModalCard"></div>
+  </div>
+
+  <nav class="bottom-nav" aria-label="Navigasi utama">
+    <button class="nav-item active" data-view="dashboard"><span>⌂</span>Home</button>
+    <button class="nav-item" data-view="session"><span>▶</span>Belajar</button>
+    <button class="nav-item" data-view="create"><span>＋</span>Materi</button>
+    <button class="nav-item" data-view="review"><span>↻</span>Review</button>
+  </nav>
+
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-  <script src="app.js?v=cloud-3-1"></script>
+  <script src="app.js?v=cloud-v5"></script>
 </body>
 </html>

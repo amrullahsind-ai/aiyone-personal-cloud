@@ -16,7 +16,7 @@
   let state = {
     materials: [], flashcards: [], quizzes: [], logs: [], teaching: [],
     user: null, supa: null, deferredInstall: null,
-    settings: defaultSettings(), currentReview: 0, currentQuiz: null
+    settings: defaultSettings(), currentReview: 0, currentQuiz: null, currentSession: null
   };
 
   function defaultSettings() {
@@ -139,17 +139,23 @@
   }
 
   function renderAll() {
-    renderSync(); renderDashboard(); renderLibrary(); renderReview(); renderTeachOptions(); fillSettings();
+    renderSync(); renderDashboard(); renderLibrary(); renderReview(); renderTeachOptions(); renderSessionOptions(); renderAnalytics(); fillSettings();
   }
 
   function setView(id) {
     $$(".view").forEach(v => v.classList.toggle("active", v.id === id));
     $$(".nav-item").forEach(b => b.classList.toggle("active", b.dataset.view === id));
-    const names = { dashboard:"Dashboard", create:"Upload / Create", library:"Library", review:"Review", teach:"Teaching Mode", settings:"Settings" };
-    $("#pageTitle").textContent = names[id] || "Aiyone";
+    const names = { dashboard:"Dashboard", session:"Sesi Belajar", create:"Tambah Materi", library:"Library", review:"Review", teach:"Teaching Mode", analytics:"Analytics", settings:"Settings" };
+    const title = names[id] || "Aiyone";
+    const pageTitle = $("#pageTitle"); if (pageTitle) pageTitle.textContent = title;
+    const mobileTitle = $("#mobilePageTitle"); if (mobileTitle) mobileTitle.textContent = title;
+    closeDrawer();
+    window.scrollTo({ top: 0, behavior: "smooth" });
     if (id === "review") renderReview();
     if (id === "library") renderLibrary();
     if (id === "teach") renderTeachOptions();
+    if (id === "session") { renderSessionOptions(); renderSession(); }
+    if (id === "analytics") renderAnalytics();
   }
 
   function renderSync() {
@@ -201,13 +207,21 @@
     if (!state.materials.length) {
       $("#todayBadge").textContent = "Belum ada data"; box.className = "stack empty"; box.textContent = "Upload materi untuk memulai learning loop.";
     } else if (!due.length) {
-      $("#todayBadge").textContent = "Aman"; box.className = "stack empty"; box.textContent = "Tidak ada review mendesak. Kalau mau, lanjut teaching mode untuk materi terbaru.";
+      $("#todayBadge").textContent = "Aman"; box.className = "stack";
+      const latest = state.materials[0];
+      box.innerHTML = `<div class="daily-command"><b>Tidak ada review mendesak.</b><p class="muted">Gunakan waktu ini untuk sesi belajar terarah atau teaching mode pada materi terbaru.</p><div class="action-row wrap"><button class="primary" id="dashStartSession">Mulai Sesi Belajar</button><button class="ghost" id="dashTeach">Teaching Mode</button></div></div>`;
+      $("#dashStartSession")?.addEventListener("click", () => { if (latest) state.currentSession = { materialId: latest.id, step: 0, recall: {} }; setView("session"); });
+      $("#dashTeach")?.addEventListener("click", () => setView("teach"));
     } else {
       $("#todayBadge").textContent = `${due.length} kartu due`; box.className = "stack";
-      due.slice(0, 6).forEach(c => {
+      const cmd = document.createElement("div"); cmd.className = "daily-command";
+      cmd.innerHTML = `<b>${due.length} kartu perlu diulang hari ini.</b><p class="muted">Selesaikan review dulu sebelum tambah materi baru. Fokus utama: kartu dengan retensi rendah.</p><button class="primary" id="dashReview">Mulai Review Hari Ini</button>`;
+      box.appendChild(cmd);
+      $("#dashReview", cmd).onclick = () => setView("review");
+      due.slice(0, 5).forEach(c => {
         const m = findMaterial(c.material_id || c.materialId);
-        const div = document.createElement("div"); div.className = "flash-mini";
-        div.innerHTML = `<b>${esc(c.front)}</b><p class="muted">${esc(materialTitle(m || {}))} • ${Math.round(cardRetention(c)*100)}% retensi</p>`;
+        const div = document.createElement("div"); div.className = "flash-mini priority";
+        div.innerHTML = `<b>${esc(c.front)}</b><p class="muted">${esc(materialTitle(m || {}))} • retensi ±${Math.round(cardRetention(c)*100)}% • due ${shortDate(cardDue(c))}</p>`;
         box.appendChild(div);
       });
     }
@@ -240,6 +254,7 @@
     el.querySelector("h4").textContent = materialTitle(m);
     el.querySelector("p").textContent = `${materialCards(m.id).length} flashcard • ${materialQuizzes(m.id).length} quiz • ${shortDate(materialDate(m))} • ${(m.summary_short || m.summaryShort || "").slice(0, 110)}`;
     el.querySelector(".open").onclick = () => showDetail(m.id);
+    el.querySelector(".session-start")?.addEventListener("click", () => { state.currentSession = { materialId: m.id, step: 0, recall: {} }; setView("session"); });
     el.querySelector(".quiz").onclick = () => startQuiz(m.id);
     el.querySelector(".del").onclick = () => deleteMaterial(m.id);
     return el;
@@ -251,7 +266,7 @@
     const p = $("#detailPanel"); p.hidden = false;
     const sections = m.study_sections || m.studySections || splitIntoSections(m.summary_long || m.summaryLong || "");
     p.innerHTML = `
-      <div class="panel-head detail-hero"><div><span class="badge soft">${esc(m.category || "Umum")}</span><h3>${esc(materialTitle(m))}</h3><p class="muted">${shortDate(materialDate(m))} • ${cards.length} flashcard • ${quizPool(id).length} quiz siap</p></div><button class="ghost small" id="closeDetail">Tutup</button></div>
+      <div class="panel-head detail-hero"><div><span class="badge soft">${esc(m.category || "Umum")}</span><h3>${esc(materialTitle(m))}</h3><p class="muted">${shortDate(materialDate(m))} • ${cards.length} flashcard • ${quizPool(id).length} quiz siap</p></div><div class="action-row wrap"><button class="primary small" id="startSessionFromDetail">Mulai sesi</button><button class="ghost small" id="startQuizFromDetail">Quiz</button><button class="ghost small" id="closeDetail">Tutup</button></div></div>
       <div class="study-overview">
         <div><span class="section-label">Ringkasan Cepat</span><p>${esc(m.summary_short || m.summaryShort || "Belum ada ringkasan pendek.")}</p></div>
         ${renderTakeaways(m.key_takeaways || m.keyTakeaways || [])}
@@ -262,6 +277,8 @@
       <div class="detail-section"><h4>Quiz Bertingkat</h4><p class="muted">Klik tombol Quiz di kartu materi untuk latihan interaktif. Di bawah ini daftar soal yang disiapkan.</p><div class="stack">${quizPool(id).slice(0,12).map(q => `<div class="flash-mini"><b>[${esc(q.level || "understanding")}] ${esc(q.question)}</b><p class="muted">${esc(q.explanation || "")}</p></div>`).join("") || "<p class='muted'>Belum ada quiz.</p>"}</div></div>
     `;
     $("#closeDetail").onclick = () => { p.hidden = true; };
+    $("#startSessionFromDetail")?.addEventListener("click", () => { state.currentSession = { materialId: id, step: 0, recall: {} }; setView("session"); });
+    $("#startQuizFromDetail")?.addEventListener("click", () => startQuiz(id));
     setView("library");
   }
 
@@ -304,10 +321,12 @@
     setStatus("AI sedang memecah materi jadi konsep, flashcard, quiz, dan jadwal review...");
     try {
       const result = await callAI("buildMaterial", { text: text.slice(0, 30000), titleHint, categoryHint });
-      await saveLearningPack(text, titleHint, categoryHint, result);
-      setStatus("Selesai. Learning pack sudah tersimpan.");
+      const materialId = await saveLearningPack(text, titleHint, categoryHint, result);
+      setStatus("Selesai. Learning pack sudah tersimpan. Aiyone membuka sesi belajar terarah.");
       $("#textInput").value = ""; $("#titleInput").value = ""; $("#categoryInput").value = "";
-      await refreshAll(); setView("library");
+      await refreshAll();
+      state.currentSession = { materialId, step: 0, recall: {} };
+      setView("session");
     } catch (err) {
       setStatus(`Gagal generate AI: ${err.message}\n\nSolusi cepat: cek .env / Vercel Environment Variables, coba model lain, atau simpan tanpa AI.`);
     }
@@ -339,6 +358,7 @@
       for (const c of flashcards) await put("flashcards", c);
       for (const q of quizzes) await put("quizzes", q);
     }
+    return m.id;
   }
 
   async function insertMaterialCloud(material) {
@@ -442,8 +462,8 @@
   async function saveManual() {
     const text = $("#textInput").value.trim();
     if (!text) return alert("Isi teks materi dulu.");
-    await saveLearningPack(text, $("#titleInput").value.trim(), $("#categoryInput").value.trim(), { title: $("#titleInput").value.trim() || "Materi Manual", category: $("#categoryInput").value.trim() || "Umum", summaryShort: text.slice(0, 180), concepts: [], flashcards: [], quizzes: [] });
-    await refreshAll(); setView("library");
+    const materialId = await saveLearningPack(text, $("#titleInput").value.trim(), $("#categoryInput").value.trim(), { title: $("#titleInput").value.trim() || "Materi Manual", category: $("#categoryInput").value.trim() || "Umum", summaryShort: text.slice(0, 180), concepts: [], flashcards: [], quizzes: [] });
+    await refreshAll(); state.currentSession = { materialId, step: 0, recall: {} }; setView("session");
   }
 
   async function callAI(type, payload) {
@@ -470,7 +490,7 @@
     state.currentReview = clamp(state.currentReview, 0, cards.length - 1);
     const c = cards[state.currentReview], m = findMaterial(c.material_id || c.materialId);
     const div = document.createElement("div"); div.className = "review-card";
-    div.innerHTML = `<span class="badge soft">${esc(materialTitle(m || {}))}</span><div class="review-question">${esc(c.front)}</div><button class="ghost" id="showAns">Tampilkan jawaban</button><div class="review-answer" id="answerBox" hidden>${esc(c.back)}</div><div class="action-row wrap" id="rateBtns" hidden><button class="danger" data-rate="again">Again</button><button class="ghost" data-rate="hard">Hard</button><button class="primary" data-rate="good">Good</button><button class="primary" data-rate="easy">Easy</button></div><p class="muted">${state.currentReview+1} dari ${cards.length} • retensi ±${Math.round(cardRetention(c)*100)}%</p>`;
+    div.innerHTML = `<span class="badge soft">${esc(materialTitle(m || {}))}</span><div class="review-question">${esc(c.front)}</div><button class="ghost" id="showAns">Tampilkan jawaban</button><div class="review-answer" id="answerBox" hidden>${esc(c.back)}</div><div class="action-row wrap" id="rateBtns" hidden><button class="danger" data-rate="again">Lupa</button><button class="ghost" data-rate="hard">Sulit</button><button class="primary" data-rate="good">Paham</button><button class="primary" data-rate="easy">Mudah</button></div><p class="muted">${state.currentReview+1} dari ${cards.length} • retensi ±${Math.round(cardRetention(c)*100)}% • pilih Lupa/Sulit/Paham/Mudah setelah melihat jawaban</p>`;
     box.appendChild(div);
     $("#showAns").onclick = () => { $("#answerBox").hidden = false; $("#rateBtns").hidden = false; };
     $$("[data-rate]", div).forEach(btn => btn.onclick = () => reviewCard(c, btn.dataset.rate));
@@ -528,15 +548,16 @@
   function startQuiz(materialId) {
     const quizzes = quizPool(materialId);
     if (!quizzes.length) return alert("Belum ada quiz untuk materi ini.");
-    state.currentQuiz = { materialId, quizzes, index: 0, correct: 0, answered: false };
-    setView("library");
+    state.currentQuiz = { materialId, quizzes, index: 0, correct: 0, answered: false, mistakes: [] };
     showQuiz();
   }
 
   function showQuiz() {
     const qstate = state.currentQuiz; if (!qstate) return;
     const q = qstate.quizzes[qstate.index];
-    const p = $("#detailPanel"); p.hidden = false;
+    const modal = $("#quizModal");
+    const p = $("#quizModalCard");
+    if (modal) { modal.classList.add("open"); modal.setAttribute("aria-hidden", "false"); }
     const progress = Math.round((qstate.index) / qstate.quizzes.length * 100);
     p.innerHTML = `
       <div class="quiz-shell">
@@ -547,7 +568,7 @@
         <div id="quizExplain" class="quiz-feedback" hidden></div>
         <div class="action-row wrap quiz-actions"><button class="primary" id="quizNext" hidden>${qstate.index + 1 >= qstate.quizzes.length ? "Selesai" : "Lanjut"}</button></div>
       </div>`;
-    $("#closeQuiz", p).onclick = () => { state.currentQuiz = null; p.hidden = true; };
+    $("#closeQuiz", p).onclick = () => closeQuizModal();
     $$(".quiz-option", p).forEach(btn => btn.onclick = () => answerQuiz(btn, q, qstate, p));
   }
 
@@ -556,7 +577,7 @@
     qstate.answered = true;
     const chosen = Number(btn.dataset.i), answer = Number(q.answer_index || 0);
     const correct = chosen === answer;
-    if (correct) qstate.correct += 1;
+    if (correct) qstate.correct += 1; else qstate.mistakes.push({ question: q.question, chosen: q.options[chosen], correct: q.options[answer], explanation: q.explanation || "" });
     $$(".quiz-option", panel).forEach((b, i) => {
       b.disabled = true;
       b.classList.add(i === answer ? "correct" : i === chosen ? "wrong" : "dimmed");
@@ -572,10 +593,14 @@
       if (qstate.index >= qstate.quizzes.length) {
         const score = Math.round(qstate.correct / qstate.quizzes.length * 100);
         await updateSmartStreak(score);
-        panel.innerHTML = `<div class="quiz-result"><span class="badge ${score >= 70 ? "cloud" : "local"}">${score >= 70 ? "Lulus mastery" : "Perlu review"}</span><h3>Quiz selesai</h3><p>Skor kamu: <b>${score}%</b> (${qstate.correct}/${qstate.quizzes.length} benar)</p><p class="muted">Smart streak naik kalau skor minimal 70% dan hari ini belum naik.</p><button class="primary" id="backLibrary">Kembali ke Library</button></div>`;
+        const mistakesHtml = qstate.mistakes.length ? `<div class="mistake-list"><h4>Soal yang perlu diulang</h4>${qstate.mistakes.map((x, i) => `<div class="flash-mini"><b>${i+1}. ${esc(x.question)}</b><p><b>Jawaban benar:</b> ${esc(x.correct)}</p><p class="muted">${esc(x.explanation || "Cek konsep terkait dari materi.")}</p></div>`).join("")}</div>` : `<p class="muted">Tidak ada soal salah. Coba teaching mode untuk memastikan kamu bisa menjelaskan ulang.</p>`;
+        panel.innerHTML = `<div class="quiz-result"><span class="badge ${score >= 70 ? "cloud" : "local"}">${score >= 70 ? "Lulus mastery" : "Perlu review"}</span><h3>Quiz selesai</h3><p>Skor kamu: <b>${score}%</b> (${qstate.correct}/${qstate.quizzes.length} benar)</p><p class="muted">Smart streak naik kalau skor minimal 70% dan hari ini belum naik.</p>${mistakesHtml}<div class="action-row wrap"><button class="primary" id="retryWrong">Ulangi konsep salah</button><button class="ghost" id="goTeachAfterQuiz">Teaching Mode</button><button class="ghost" id="backLibrary">Kembali ke Library</button></div></div>`;
+        const doneMaterialId = qstate.materialId;
         state.currentQuiz = null;
         await refreshAll();
-        $("#backLibrary", panel).onclick = () => { panel.hidden = true; setView("library"); };
+        $("#retryWrong", panel).onclick = () => startQuiz(doneMaterialId);
+        $("#goTeachAfterQuiz", panel).onclick = () => { closeQuizModal(); setView("teach"); };
+        $("#backLibrary", panel).onclick = () => { closeQuizModal(); setView("library"); };
       } else showQuiz();
     };
   }
@@ -650,8 +675,145 @@
     await refreshAll();
   }
 
+
+  function renderSessionOptions() {
+    const s = $("#sessionMaterial"); if (!s) return;
+    s.innerHTML = state.materials.map(m => `<option value="${m.id}">${esc(materialTitle(m))}</option>`).join("");
+    if (state.currentSession?.materialId) s.value = state.currentSession.materialId;
+    if (!s.dataset.bound) {
+      s.onchange = () => { state.currentSession = { materialId: s.value, step: 0, recall: {} }; renderSession(); };
+      s.dataset.bound = "1";
+    }
+  }
+
+  function getStudySectionsForMaterial(m) {
+    return m ? (m.study_sections || m.studySections || splitIntoSections(m.summary_long || m.summaryLong || m.summary_short || m.summaryShort || "")) : [];
+  }
+
+  function renderSession() {
+    const box = $("#sessionBox"); if (!box) return;
+    if (!state.materials.length) { box.className = "session-box empty"; box.textContent = "Upload materi dulu untuk memakai sesi belajar."; return; }
+    const select = $("#sessionMaterial");
+    const materialId = state.currentSession?.materialId || select?.value || state.materials[0]?.id;
+    const m = findMaterial(materialId) || state.materials[0];
+    if (!state.currentSession || state.currentSession.materialId !== m.id) state.currentSession = { materialId: m.id, step: 0, recall: {} };
+    if (select) select.value = m.id;
+    const sections = getStudySectionsForMaterial(m);
+    const step = clamp(state.currentSession.step || 0, 0, Math.max(sections.length - 1, 0));
+    state.currentSession.step = step;
+    const sec = sections[step] || { title: materialTitle(m), explanation: m.summary_long || m.summary_short || "Belum ada materi bertahap.", example: "", activeRecall: "Jelaskan inti bagian ini dengan bahasamu." };
+    const progress = sections.length ? Math.round(((step + 1) / sections.length) * 100) : 0;
+    box.className = "session-box";
+    box.innerHTML = `
+      <div class="session-hero">
+        <div><span class="badge soft">Step ${step + 1}/${Math.max(sections.length, 1)}</span><h3>${esc(sec.title || `Bagian ${step + 1}`)}</h3><p class="muted">${esc(materialTitle(m))}</p></div>
+        <div class="session-progress"><div class="bar"><i style="width:${progress}%"></i></div><b>${progress}%</b></div>
+      </div>
+      <div class="prose-block learning-copy">${htmlParagraphs(sec.explanation || sec.content || "-")}</div>
+      ${sec.example ? `<div class="example"><b>Contoh:</b> ${esc(sec.example)}</div>` : ""}
+      <div class="recall-box">
+        <label><b>Active recall</b><span>${esc(sec.activeRecall || sec.active_recall || "Coba jelaskan ulang bagian ini tanpa melihat catatan.")}</span><textarea id="sessionRecall" rows="4" placeholder="Tulis jawaban singkatmu di sini..."></textarea></label>
+      </div>
+      <div class="action-row wrap session-actions">
+        <button class="ghost" id="prevStep" ${step <= 0 ? "disabled" : ""}>Sebelumnya</button>
+        <button class="primary" id="nextStep">${step + 1 >= sections.length ? "Selesai Baca" : "Saya paham, lanjut"}</button>
+        <button class="ghost" id="sessionFlash">Review Flashcard</button>
+        <button class="ghost" id="sessionQuiz">Quiz</button>
+        <button class="ghost" id="sessionTeach">Teaching Mode</button>
+      </div>`;
+    const savedRecall = state.currentSession.recall?.[step] || "";
+    $("#sessionRecall", box).value = savedRecall;
+    $("#sessionRecall", box).oninput = e => { state.currentSession.recall[step] = e.target.value; };
+    $("#prevStep", box).onclick = () => { state.currentSession.step = Math.max(0, step - 1); renderSession(); };
+    $("#nextStep", box).onclick = () => { if (step + 1 >= sections.length) { startQuiz(m.id); } else { state.currentSession.step = step + 1; renderSession(); } };
+    $("#sessionFlash", box).onclick = () => setView("review");
+    $("#sessionQuiz", box).onclick = () => startQuiz(m.id);
+    $("#sessionTeach", box).onclick = () => { setView("teach"); $("#teachMaterial").value = m.id; };
+  }
+
+  function renderAnalytics() {
+    const reviewCount = state.logs.length;
+    const correct = state.logs.filter(l => l.correct).length;
+    const acc = reviewCount ? Math.round((correct / reviewCount) * 100) : 0;
+    const weakCards = state.flashcards.filter(c => memoryStatus(c) === "weak");
+    const setText = (id, val) => { const el = $(id); if (el) el.textContent = val; };
+    setText("#aReviews", reviewCount);
+    setText("#aAccuracy", `${acc}%`);
+    setText("#aTeaching", state.teaching.length);
+    setText("#aWeak", weakCards.length);
+
+    const weakBox = $("#weakConceptList");
+    if (weakBox) {
+      weakBox.innerHTML = "";
+      if (!weakCards.length) { weakBox.className = "stack empty"; weakBox.textContent = state.flashcards.length ? "Belum ada konsep rawan. Pertahankan review." : "Belum ada data review."; }
+      else {
+        weakBox.className = "stack";
+        weakCards.slice(0, 10).forEach(c => {
+          const m = findMaterial(c.material_id || c.materialId);
+          const div = document.createElement("div"); div.className = "flash-mini priority";
+          div.innerHTML = `<b>${esc(c.concept || c.front)}</b><p class="muted">${esc(materialTitle(m || {}))} • retensi ±${Math.round(cardRetention(c)*100)}% • lapses ${c.lapses || 0}</p><p>${esc(c.front)}</p>`;
+          weakBox.appendChild(div);
+        });
+      }
+    }
+    const actBox = $("#activityList");
+    if (actBox) {
+      const activities = [
+        ...state.logs.map(l => ({ type:"Review", at:l.created_at || now(), text:`${l.rating || "review"} • ${l.correct ? "benar" : "perlu ulang"}` })),
+        ...state.teaching.map(t => ({ type:"Teaching", at:t.created_at || now(), text:`skor ${Math.round(Number(t.result?.masteryScore || t.result?.mastery_score || 0))}%` }))
+      ].sort((a,b) => new Date(b.at) - new Date(a.at)).slice(0, 12);
+      actBox.innerHTML = "";
+      if (!activities.length) { actBox.className = "stack empty"; actBox.textContent = "Belum ada aktivitas."; }
+      else { actBox.className = "stack"; activities.forEach(a => { const div = document.createElement("div"); div.className = "flash-mini"; div.innerHTML = `<b>${esc(a.type)}</b><p>${esc(a.text)}</p><small class="muted">${shortDate(a.at)}</small>`; actBox.appendChild(div); }); }
+    }
+  }
+
+  async function syncLocalToCloud() {
+    if (!isCloud()) return alert("Login Supabase dulu sampai status Cloud aktif.");
+    const [lm, lc, lq, ll, lt] = await Promise.all([getAll("materials"), getAll("flashcards"), getAll("quizzes"), getAll("review_logs"), getAll("teaching_sessions")]);
+    const uidUser = state.user.id;
+    const localMaterials = lm.filter(m => !m.user_id || m.user_id !== uidUser);
+    if (!localMaterials.length) return alert("Tidak ada materi lokal yang perlu dipindahkan.");
+    if (!confirm(`Pindahkan ${localMaterials.length} materi lokal ke Cloud? Data lokal tidak dihapus.`)) return;
+    const ids = new Set(localMaterials.map(m => m.id));
+    const materials = localMaterials.map(m => ({ ...m, user_id: uidUser, updated_at: now() }));
+    const cards = lc.filter(c => ids.has(c.material_id || c.materialId)).map(c => ({ ...c, user_id: uidUser, material_id: c.material_id || c.materialId }));
+    const quizzes = lq.filter(q => ids.has(q.material_id || q.materialId)).map(q => ({ ...q, user_id: uidUser, material_id: q.material_id || q.materialId }));
+    const logs = ll.filter(l => ids.has(l.material_id || l.materialId)).map(l => ({ ...l, user_id: uidUser, material_id: l.material_id || l.materialId }));
+    const teaching = lt.filter(t => ids.has(t.material_id || t.materialId)).map(t => ({ ...t, user_id: uidUser, material_id: t.material_id || t.materialId }));
+    const upsert = async (table, rows) => { if (!rows.length) return; const { error } = await state.supa.from(table).upsert(rows, { onConflict: "id" }); if (error) throw new Error(`${table}: ${error.message}`); };
+    try {
+      await upsert("materials", materials);
+      await upsert("flashcards", cards);
+      await upsert("quizzes", quizzes);
+      await upsert("review_logs", logs);
+      await upsert("teaching_sessions", teaching);
+      await refreshAll();
+      alert("Data lokal berhasil dipindahkan ke Cloud.");
+    } catch (e) { alert(`Gagal sync: ${e.message}`); }
+  }
+
+  function openDrawer() {
+    $("#sidebar")?.classList.add("open");
+    $("#drawerOverlay")?.classList.add("show");
+  }
+  function closeDrawer() {
+    $("#sidebar")?.classList.remove("open");
+    $("#drawerOverlay")?.classList.remove("show");
+  }
+  function closeQuizModal() {
+    state.currentQuiz = null;
+    const modal = $("#quizModal");
+    const card = $("#quizModalCard");
+    if (modal) { modal.classList.remove("open"); modal.setAttribute("aria-hidden", "true"); }
+    if (card) card.innerHTML = "";
+  }
+
   function bindEvents() {
     $$(".nav-item").forEach(b => b.onclick = () => setView(b.dataset.view));
+    $$("#menuToggle").forEach(b => b.onclick = openDrawer);
+    $$("#drawerClose, #drawerOverlay").forEach(b => b.onclick = closeDrawer);
+    document.addEventListener("keydown", e => { if (e.key === "Escape") { closeDrawer(); closeQuizModal(); } });
     $$('[data-jump]').forEach(b => b.onclick = () => setView(b.dataset.jump));
     $("#pdfInput").onchange = async (e) => {
       const file = e.target.files[0]; if (!file) return;
@@ -685,9 +847,22 @@
     $("#logoutBtn").onclick = async () => { if (state.supa) await state.supa.auth.signOut(); await refreshAll(); };
     $("#exportBtn").onclick = exportJSON;
     $("#importInput").onchange = e => e.target.files[0] && importJSON(e.target.files[0]);
+    $("#syncLocalBtn") && ($("#syncLocalBtn").onclick = syncLocalToCloud);
     $("#resetBtn").onclick = resetLocal;
-    window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); state.deferredInstall = e; $("#installBtn").hidden = false; });
-    $("#installBtn").onclick = async () => { if (state.deferredInstall) { state.deferredInstall.prompt(); state.deferredInstall = null; $("#installBtn").hidden = true; } };
+    window.addEventListener("beforeinstallprompt", e => {
+      e.preventDefault(); state.deferredInstall = e;
+      const a = $("#installBtn"), b = $("#mobileInstallBtn");
+      if (a) a.hidden = false; if (b) b.hidden = false;
+    });
+    const install = async () => {
+      if (state.deferredInstall) {
+        state.deferredInstall.prompt(); state.deferredInstall = null;
+        const a = $("#installBtn"), b = $("#mobileInstallBtn");
+        if (a) a.hidden = true; if (b) b.hidden = true;
+      }
+    };
+    if ($("#installBtn")) $("#installBtn").onclick = install;
+    if ($("#mobileInstallBtn")) $("#mobileInstallBtn").onclick = install;
   }
 
   async function authAction(kind) {
