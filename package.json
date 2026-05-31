@@ -1,0 +1,8 @@
+{
+  "name": "aiyone-personal-cloud",
+  "version": "2.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  }
+}

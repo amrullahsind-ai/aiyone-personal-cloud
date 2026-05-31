@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#5b4bff" />
+  <title>Aiyone Personal Cloud</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-logo">A</div>
+        <div>
+          <h1>Aiyone</h1>
+          <p>Personal Cloud Edition</p>
+        </div>
+      </div>
+      <nav class="nav">
+        <button class="nav-item active" data-view="dashboard">Dashboard</button>
+        <button class="nav-item" data-view="create">Upload / Create</button>
+        <button class="nav-item" data-view="library">Library</button>
+        <button class="nav-item" data-view="review">Review</button>
+        <button class="nav-item" data-view="teach">Teaching Mode</button>
+        <button class="nav-item" data-view="settings">Settings</button>
+      </nav>
+      <div class="sync-card" id="syncCard">
+        <span class="badge local" id="syncBadge">Local</span>
+        <p id="syncText">Data masih tersimpan lokal. Aktifkan Supabase untuk cloud database.</p>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Master what you study, not just pass.</p>
+          <h2 id="pageTitle">Dashboard</h2>
+        </div>
+        <div class="top-actions">
+          <button class="ghost" id="installBtn" hidden>Install</button>
+          <button class="primary" data-jump="create">+ Materi</button>
+        </div>
+      </header>
+
+      <section class="view active" id="dashboard">
+        <div class="metrics">
+          <article><span>Materi</span><strong id="mMaterials">0</strong></article>
+          <article><span>Konsep</span><strong id="mConcepts">0</strong></article>
+          <article><span>Due Review</span><strong id="mDue">0</strong></article>
+          <article><span>Smart Streak</span><strong id="mStreak">0🔥</strong></article>
+        </div>
+
+        <div class="grid two">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <h3>Aksi Hari Ini</h3>
+                <p class="muted">Aiyone memilih materi berdasarkan prediksi lupa, bukan sekadar urutan upload.</p>
+              </div>
+              <span class="badge" id="todayBadge">Belum ada data</span>
+            </div>
+            <div id="todayActions" class="stack empty">Upload materi untuk memulai learning loop.</div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <h3>Peta Memori</h3>
+                <p class="muted">Prediksi retensi dari riwayat benar/salah dan interval review.</p>
+              </div>
+            </div>
+            <div class="memory-bars">
+              <div><span>Kuat</span><div class="bar"><i id="barStrong"></i></div><b id="txtStrong">0%</b></div>
+              <div><span>Sedang</span><div class="bar"><i id="barMedium"></i></div><b id="txtMedium">0%</b></div>
+              <div><span>Rawan lupa</span><div class="bar"><i id="barWeak"></i></div><b id="txtWeak">0%</b></div>
+            </div>
+          </article>
+        </div>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>Materi Terbaru</h3>
+              <p class="muted">Buka materi untuk melihat konsep, flashcard, quiz, dan status review.</p>
+            </div>
+            <button class="ghost small" data-jump="library">Lihat semua</button>
+          </div>
+          <div id="recentList" class="cards empty">Belum ada materi.</div>
+        </article>
+      </section>
+
+      <section class="view" id="create">
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>Masukkan Materi</h3>
+              <p class="muted">Upload PDF teks atau tempel catatan. AI akan memecahnya jadi konsep, flashcard, quiz bertingkat, dan jadwal review.</p>
+            </div>
+            <span class="badge">Concept Extractor</span>
+          </div>
+
+          <label class="dropzone" for="pdfInput">
+            <input id="pdfInput" type="file" accept="application/pdf" />
+            <strong>Upload PDF</strong>
+            <span>PDF teks bisa diekstrak. PDF scan/foto perlu OCR dan belum sempurna di versi ini.</span>
+          </label>
+
+          <div class="field-row">
+            <label>Judul manual, opsional<input id="titleInput" placeholder="Misal: Psikologi Pendidikan Bab 2" /></label>
+            <label>Kategori<input id="categoryInput" placeholder="Kuliah / Hafalan / Proposal" /></label>
+          </div>
+          <label>Teks materi<textarea id="textInput" rows="11" placeholder="Tempel materi di sini kalau tidak pakai PDF..."></textarea></label>
+          <div class="action-row">
+            <button class="primary" id="generateBtn">Generate Learning Pack</button>
+            <button class="ghost" id="saveManualBtn">Simpan tanpa AI</button>
+          </div>
+          <div id="statusBox" class="status" hidden></div>
+        </article>
+      </section>
+
+      <section class="view" id="library">
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>Library</h3>
+              <p class="muted">Materi tersimpan di local database atau Supabase kalau cloud aktif.</p>
+            </div>
+            <input id="searchInput" class="search" type="search" placeholder="Cari materi / konsep..." />
+          </div>
+          <div id="libraryList" class="cards empty">Belum ada materi.</div>
+        </article>
+        <article id="detailPanel" class="panel detail" hidden></article>
+      </section>
+
+      <section class="view" id="review">
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>Review Hari Ini</h3>
+              <p class="muted">Jawab dulu di kepala, baru buka jawaban. Rating menentukan kapan kartu muncul lagi.</p>
+            </div>
+            <button class="ghost small" id="refreshBtn">Refresh</button>
+          </div>
+          <div id="reviewBox" class="review empty">Belum ada kartu due.</div>
+        </article>
+      </section>
+
+      <section class="view" id="teach">
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>Teaching Mode</h3>
+              <p class="muted">Aiyone menilai penjelasanmu dengan rubrik: akurasi, kelengkapan, contoh, dan miskonsepsi.</p>
+            </div>
+            <span class="badge">Rubric-based</span>
+          </div>
+          <div class="field-row">
+            <label>Pilih materi<select id="teachMaterial"></select></label>
+            <label>Fokus konsep, opsional<input id="teachFocus" placeholder="Misal: reinforcement, cognitive load" /></label>
+          </div>
+          <label>Penjelasanmu<textarea id="teachAnswer" rows="10" placeholder="Jelaskan seolah kamu mengajar temanmu..."></textarea></label>
+          <button class="primary" id="teachBtn">Nilai Pemahaman</button>
+          <div id="teachOutput" class="ai-box" hidden></div>
+        </article>
+      </section>
+
+      <section class="view" id="settings">
+        <div class="grid two">
+          <article class="panel">
+            <h3>AI Server</h3>
+            <p class="muted">API key AI disimpan di server lokal/Vercel, bukan di browser. Isi file <code>.env</code> atau Environment Variables di Vercel.</p>
+            <label>Provider utama
+              <select id="providerSelect">
+                <option value="gemini">Gemini</option>
+                <option value="groq">Groq</option>
+                <option value="openrouter">OpenRouter</option>
+              </select>
+            </label>
+            <label>Model Gemini<input id="geminiModel" value="gemini-2.5-flash-lite" /></label>
+            <label>Model Groq<input id="groqModel" value="llama-3.1-8b-instant" /></label>
+            <label>Model OpenRouter<input id="openrouterModel" value="google/gemini-2.0-flash-exp:free" /></label>
+            <button class="primary" id="saveAiSettings">Simpan AI Settings</button>
+            <button class="ghost" id="testAiBtn">Tes AI Server</button>
+          </article>
+
+          <article class="panel">
+            <h3>Supabase Cloud Database</h3>
+            <p class="muted">Masukkan URL dan anon key Supabase. Setelah login, data tersimpan di PostgreSQL cloud dengan RLS.</p>
+            <label>Supabase URL<input id="supabaseUrl" placeholder="https://xxxx.supabase.co" /></label>
+            <label>Supabase Anon Key<input id="supabaseAnon" type="password" placeholder="eyJ..." /></label>
+            <div class="action-row wrap">
+              <button class="primary" id="saveSupabaseBtn">Simpan koneksi</button>
+              <button class="ghost" id="clearSupabaseBtn">Matikan cloud</button>
+            </div>
+            <hr />
+            <label>Email<input id="authEmail" type="email" placeholder="email kamu" /></label>
+            <label>Password<input id="authPassword" type="password" placeholder="min. 6 karakter" /></label>
+            <div class="action-row wrap">
+              <button class="primary" id="signUpBtn">Sign up</button>
+              <button class="ghost" id="loginBtn">Login</button>
+              <button class="ghost" id="logoutBtn">Logout</button>
+            </div>
+            <p id="authStatus" class="muted">Belum login.</p>
+          </article>
+
+          <article class="panel">
+            <h3>Backup & Migrasi</h3>
+            <p class="muted">Backup tetap disediakan supaya kamu tidak bergantung penuh pada browser/cloud.</p>
+            <div class="action-row wrap">
+              <button class="ghost" id="exportBtn">Export JSON</button>
+              <label class="ghost import-label" for="importInput">Import JSON</label>
+              <input id="importInput" type="file" accept="application/json" hidden />
+              <button class="danger" id="resetBtn">Reset local data</button>
+            </div>
+          </article>
+
+          <article class="panel">
+            <h3>Memory Engine</h3>
+            <p class="muted">Smart streak hanya naik kalau skor review/quiz minimal 70%. Kartu sulit muncul lebih cepat, kartu mudah makin jauh.</p>
+            <div class="mini-table">
+              <span>Again</span><b>10 menit</b>
+              <span>Hard</span><b>1 hari / interval pendek</b>
+              <span>Good</span><b>interval normal</b>
+              <span>Easy</span><b>interval panjang</b>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <template id="materialCardTpl">
+    <article class="material-card">
+      <div>
+        <span class="badge soft cat"></span>
+        <h4></h4>
+        <p></p>
+      </div>
+      <div class="card-actions">
+        <button class="ghost small open">Buka</button>
+        <button class="ghost small quiz">Quiz</button>
+        <button class="danger small del">Hapus</button>
+      </div>
+    </article>
+  </template>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="app.js?v=cloud-3-1"></script>
+</body>
+</html>

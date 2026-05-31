@@ -1,0 +1,724 @@
+(() => {
+  "use strict";
+
+  const DB_NAME = "aiyone_cloud_v3_1";
+  const DB_VERSION = 1;
+  const STORES = ["materials", "flashcards", "quizzes", "review_logs", "teaching_sessions", "settings"];
+  const dayMs = 86400000;
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const uid = (p = "id") => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+  const now = () => new Date().toISOString();
+  const esc = (v = "") => String(v).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
+  const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+
+  let db;
+  let state = {
+    materials: [], flashcards: [], quizzes: [], logs: [], teaching: [],
+    user: null, supa: null, deferredInstall: null,
+    settings: defaultSettings(), currentReview: 0, currentQuiz: null
+  };
+
+  function defaultSettings() {
+    return {
+      provider: "gemini",
+      geminiModel: "gemini-2.5-flash-lite",
+      groqModel: "llama-3.1-8b-instant",
+      openrouterModel: "google/gemini-2.0-flash-exp:free",
+      supabaseUrl: "",
+      supabaseAnon: "",
+      streak: 0,
+      lastStreakDate: ""
+    };
+  }
+
+  function normalizeSupabaseUrl(value = "") {
+    let url = value.trim();
+    if (!url) return "";
+    if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+    return url.replace(/\/+$/, "");
+  }
+
+  function openDB() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = () => {
+        const database = req.result;
+        STORES.forEach(store => {
+          if (!database.objectStoreNames.contains(store)) database.createObjectStore(store, { keyPath: "id" });
+        });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  const store = (name, mode = "readonly") => db.transaction(name, mode).objectStore(name);
+  const getAll = (name) => new Promise((resolve, reject) => {
+    const req = store(name).getAll(); req.onsuccess = () => resolve(req.result || []); req.onerror = () => reject(req.error);
+  });
+  const put = (name, value) => new Promise((resolve, reject) => {
+    const req = store(name, "readwrite").put(value); req.onsuccess = () => resolve(value); req.onerror = () => reject(req.error);
+  });
+  const del = (name, id) => new Promise((resolve, reject) => {
+    const req = store(name, "readwrite").delete(id); req.onsuccess = () => resolve(); req.onerror = () => reject(req.error);
+  });
+  const clear = (name) => new Promise((resolve, reject) => {
+    const req = store(name, "readwrite").clear(); req.onsuccess = () => resolve(); req.onerror = () => reject(req.error);
+  });
+
+  async function loadSettings() {
+    const rows = await getAll("settings");
+    state.settings = { ...defaultSettings(), ...(rows.find(x => x.id === "settings")?.data || {}) };
+  }
+  async function saveSettings() { await put("settings", { id: "settings", data: state.settings }); }
+
+  async function initSupabase() {
+    state.supa = null; state.user = null;
+    const supabaseUrl = normalizeSupabaseUrl(state.settings.supabaseUrl);
+    const supabaseAnon = state.settings.supabaseAnon;
+    if (!supabaseUrl || !supabaseAnon || !window.supabase) return;
+    state.supa = window.supabase.createClient(supabaseUrl, supabaseAnon, {
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+    });
+    const { data } = await state.supa.auth.getSession();
+    state.user = data?.session?.user || null;
+    state.supa.auth.onAuthStateChange(async (_event, session) => {
+      const nextUser = session?.user || null;
+      if ((state.user?.id || null) === (nextUser?.id || null)) return;
+      state.user = nextUser;
+      try { await loadData(); renderAll(); } catch (e) { console.error(e); }
+    });
+  }
+
+  const isCloud = () => !!(state.supa && state.user);
+
+  async function loadData() {
+    if (isCloud()) {
+      await loadFromSupabase();
+    } else {
+      const [materials, flashcards, quizzes, logs, teaching] = await Promise.all([
+        getAll("materials"), getAll("flashcards"), getAll("quizzes"), getAll("review_logs"), getAll("teaching_sessions")
+      ]);
+      state.materials = materials.sort(sortNewest);
+      state.flashcards = flashcards;
+      state.quizzes = quizzes;
+      state.logs = logs;
+      state.teaching = teaching;
+    }
+  }
+
+  async function loadFromSupabase() {
+    const uid = state.user.id;
+    const [m, c, q, l, t] = await Promise.all([
+      state.supa.from("materials").select("*").eq("user_id", uid).order("created_at", { ascending: false }),
+      state.supa.from("flashcards").select("*").eq("user_id", uid),
+      state.supa.from("quizzes").select("*").eq("user_id", uid),
+      state.supa.from("review_logs").select("*").eq("user_id", uid),
+      state.supa.from("teaching_sessions").select("*").eq("user_id", uid).order("created_at", { ascending: false })
+    ]);
+    for (const res of [m,c,q,l,t]) if (res.error) throw new Error(res.error.message);
+    state.materials = m.data || [];
+    state.flashcards = c.data || [];
+    state.quizzes = q.data || [];
+    state.logs = l.data || [];
+    state.teaching = t.data || [];
+  }
+
+  const sortNewest = (a, b) => new Date(b.created_at || b.createdAt) - new Date(a.created_at || a.createdAt);
+  const materialDate = (m) => m.created_at || m.createdAt || now();
+  const materialTitle = (m) => m.title || "Tanpa judul";
+  const cardDue = (c) => c.due_at || c.dueAt || now();
+  const cardLast = (c) => c.last_reviewed_at || c.lastReviewedAt || null;
+  const shortDate = (iso) => new Intl.DateTimeFormat("id-ID", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(iso));
+
+  async function refreshAll() {
+    await loadSettings();
+    await initSupabase();
+    await loadData();
+    renderAll();
+  }
+
+  function renderAll() {
+    renderSync(); renderDashboard(); renderLibrary(); renderReview(); renderTeachOptions(); fillSettings();
+  }
+
+  function setView(id) {
+    $$(".view").forEach(v => v.classList.toggle("active", v.id === id));
+    $$(".nav-item").forEach(b => b.classList.toggle("active", b.dataset.view === id));
+    const names = { dashboard:"Dashboard", create:"Upload / Create", library:"Library", review:"Review", teach:"Teaching Mode", settings:"Settings" };
+    $("#pageTitle").textContent = names[id] || "Aiyone";
+    if (id === "review") renderReview();
+    if (id === "library") renderLibrary();
+    if (id === "teach") renderTeachOptions();
+  }
+
+  function renderSync() {
+    const badge = $("#syncBadge"), text = $("#syncText"), auth = $("#authStatus");
+    if (isCloud()) {
+      badge.textContent = "Cloud"; badge.className = "badge cloud";
+      text.textContent = `Supabase aktif. Login: ${state.user.email}`;
+      if (auth) auth.textContent = `Login sebagai ${state.user.email}`;
+    } else if (state.supa) {
+      badge.textContent = "Supabase"; badge.className = "badge local";
+      text.textContent = "Supabase tersambung, tapi belum login. Data masih lokal.";
+      if (auth) auth.textContent = "Supabase tersambung. Silakan login/sign up.";
+    } else {
+      badge.textContent = "Local"; badge.className = "badge local";
+      text.textContent = "Data masih tersimpan lokal. Aktifkan Supabase untuk cloud database.";
+      if (auth) auth.textContent = "Belum login.";
+    }
+  }
+
+  function dueCards() { return state.flashcards.filter(c => new Date(cardDue(c)) <= new Date()).sort((a,b) => new Date(cardDue(a)) - new Date(cardDue(b))); }
+  function cardRetention(card) {
+    const last = cardLast(card);
+    if (!last) return 0.35;
+    const days = Math.max(0, (Date.now() - new Date(last).getTime()) / dayMs);
+    const interval = Math.max(card.interval_days || card.intervalDays || 1, 0.1);
+    return Math.exp(-days / (interval * 1.25));
+  }
+  function memoryStatus(card) {
+    const retention = cardRetention(card);
+    if (new Date(cardDue(card)) <= new Date() || retention < .55 || (card.lapses || 0) > 1 && retention < .7) return "weak";
+    if (retention < .8) return "medium";
+    return "strong";
+  }
+
+  function renderDashboard() {
+    const due = dueCards();
+    const concepts = state.materials.reduce((n,m) => n + (m.concepts?.length || 0), 0);
+    $("#mMaterials").textContent = state.materials.length;
+    $("#mConcepts").textContent = concepts;
+    $("#mDue").textContent = due.length;
+    $("#mStreak").textContent = `${state.settings.streak || 0}🔥`;
+
+    const counts = { strong: 0, medium: 0, weak: 0 };
+    state.flashcards.forEach(c => counts[memoryStatus(c)]++);
+    const total = Math.max(state.flashcards.length, 1);
+    setBar("Strong", counts.strong / total); setBar("Medium", counts.medium / total); setBar("Weak", counts.weak / total);
+
+    const box = $("#todayActions"); box.innerHTML = "";
+    if (!state.materials.length) {
+      $("#todayBadge").textContent = "Belum ada data"; box.className = "stack empty"; box.textContent = "Upload materi untuk memulai learning loop.";
+    } else if (!due.length) {
+      $("#todayBadge").textContent = "Aman"; box.className = "stack empty"; box.textContent = "Tidak ada review mendesak. Kalau mau, lanjut teaching mode untuk materi terbaru.";
+    } else {
+      $("#todayBadge").textContent = `${due.length} kartu due`; box.className = "stack";
+      due.slice(0, 6).forEach(c => {
+        const m = findMaterial(c.material_id || c.materialId);
+        const div = document.createElement("div"); div.className = "flash-mini";
+        div.innerHTML = `<b>${esc(c.front)}</b><p class="muted">${esc(materialTitle(m || {}))} • ${Math.round(cardRetention(c)*100)}% retensi</p>`;
+        box.appendChild(div);
+      });
+    }
+    renderRecent();
+  }
+  function setBar(name, ratio) { const pct = Math.round(ratio * 100); $(`#bar${name}`).style.width = `${pct}%`; $(`#txt${name}`).textContent = `${pct}%`; }
+
+  function findMaterial(id) { return state.materials.find(m => m.id === id); }
+  function materialCards(id) { return state.flashcards.filter(c => (c.material_id || c.materialId) === id); }
+  function materialQuizzes(id) { return state.quizzes.filter(q => (q.material_id || q.materialId) === id); }
+
+  function renderRecent() {
+    const box = $("#recentList"); box.innerHTML = "";
+    if (!state.materials.length) { box.className = "cards empty"; box.textContent = "Belum ada materi."; return; }
+    box.className = "cards"; state.materials.slice(0,4).forEach(m => box.appendChild(materialCardEl(m)));
+  }
+
+  function renderLibrary() {
+    const q = ($("#searchInput")?.value || "").toLowerCase().trim();
+    const box = $("#libraryList"); box.innerHTML = "";
+    const items = state.materials.filter(m => !q || `${m.title} ${m.category} ${m.summary_short || m.summaryShort} ${(m.concepts||[]).map(c=>c.name).join(" ")}`.toLowerCase().includes(q));
+    if (!items.length) { box.className = "cards empty"; box.textContent = q ? "Tidak ditemukan." : "Belum ada materi."; return; }
+    box.className = "cards"; items.forEach(m => box.appendChild(materialCardEl(m)));
+  }
+
+  function materialCardEl(m) {
+    const node = $("#materialCardTpl").content.cloneNode(true);
+    const el = node.querySelector(".material-card");
+    el.querySelector(".cat").textContent = m.category || "Umum";
+    el.querySelector("h4").textContent = materialTitle(m);
+    el.querySelector("p").textContent = `${materialCards(m.id).length} flashcard • ${materialQuizzes(m.id).length} quiz • ${shortDate(materialDate(m))} • ${(m.summary_short || m.summaryShort || "").slice(0, 110)}`;
+    el.querySelector(".open").onclick = () => showDetail(m.id);
+    el.querySelector(".quiz").onclick = () => startQuiz(m.id);
+    el.querySelector(".del").onclick = () => deleteMaterial(m.id);
+    return el;
+  }
+
+  function showDetail(id) {
+    const m = findMaterial(id); if (!m) return;
+    const cards = materialCards(id), quizzes = materialQuizzes(id), concepts = m.concepts || [];
+    const p = $("#detailPanel"); p.hidden = false;
+    const sections = m.study_sections || m.studySections || splitIntoSections(m.summary_long || m.summaryLong || "");
+    p.innerHTML = `
+      <div class="panel-head detail-hero"><div><span class="badge soft">${esc(m.category || "Umum")}</span><h3>${esc(materialTitle(m))}</h3><p class="muted">${shortDate(materialDate(m))} • ${cards.length} flashcard • ${quizPool(id).length} quiz siap</p></div><button class="ghost small" id="closeDetail">Tutup</button></div>
+      <div class="study-overview">
+        <div><span class="section-label">Ringkasan Cepat</span><p>${esc(m.summary_short || m.summaryShort || "Belum ada ringkasan pendek.")}</p></div>
+        ${renderTakeaways(m.key_takeaways || m.keyTakeaways || [])}
+      </div>
+      <div class="detail-section"><h4>Materi Dipelajari Bertahap</h4>${renderStudySections(sections, m.summary_long || m.summaryLong || "-")}</div>
+      <div class="detail-section"><h4>Konsep Inti</h4><div class="concept-grid">${concepts.map(c => `<div class="concept-mini"><b>${esc(c.name)}</b><p>${esc(c.definition || "")}</p>${c.example ? `<small><b>Contoh:</b> ${esc(c.example)}</small>` : ""}<small class="muted"><b>Miskonsepsi:</b> ${esc(c.common_misconception || c.commonMisconception || "-")}</small></div>`).join("") || "<p class='muted'>Belum ada konsep.</p>"}</div></div>
+      <div class="detail-section"><h4>Flashcard</h4><div class="stack">${cards.slice(0,16).map(c => `<div class="flash-mini"><b>${esc(c.front)}</b><p>${esc(c.back)}</p><small class="muted">Due: ${shortDate(cardDue(c))} • ${esc(c.difficulty || "medium")}</small></div>`).join("") || "<p class='muted'>Belum ada flashcard.</p>"}</div></div>
+      <div class="detail-section"><h4>Quiz Bertingkat</h4><p class="muted">Klik tombol Quiz di kartu materi untuk latihan interaktif. Di bawah ini daftar soal yang disiapkan.</p><div class="stack">${quizPool(id).slice(0,12).map(q => `<div class="flash-mini"><b>[${esc(q.level || "understanding")}] ${esc(q.question)}</b><p class="muted">${esc(q.explanation || "")}</p></div>`).join("") || "<p class='muted'>Belum ada quiz.</p>"}</div></div>
+    `;
+    $("#closeDetail").onclick = () => { p.hidden = true; };
+    setView("library");
+  }
+
+  function renderTakeaways(items = []) {
+    if (!Array.isArray(items) || !items.length) return "";
+    return `<div><span class="section-label">Poin Penting</span><ul class="takeaways">${items.slice(0,8).map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>`;
+  }
+
+  function renderStudySections(sections = [], fallback = "") {
+    const list = Array.isArray(sections) && sections.length ? sections : splitIntoSections(fallback);
+    if (!list.length) return `<div class="prose-block">${htmlParagraphs(fallback || "-")}</div>`;
+    return `<div class="study-sections">${list.map((s, i) => `<article class="study-section"><div class="step-no">${i+1}</div><div><h5>${esc(s.title || `Bagian ${i+1}`)}</h5><div class="prose-block">${htmlParagraphs(s.explanation || s.content || "-")}</div>${s.example ? `<p class="example"><b>Contoh:</b> ${esc(s.example)}</p>` : ""}${s.activeRecall || s.active_recall ? `<p class="recall"><b>Active recall:</b> ${esc(s.activeRecall || s.active_recall)}</p>` : ""}</div></article>`).join("")}</div>`;
+  }
+
+  function htmlParagraphs(text = "") {
+    const clean = String(text || "").trim();
+    if (!clean) return "<p>-</p>";
+    return clean.split(/\n{2,}|(?<=\.)\s+(?=[A-ZÀ-ÝA-Z0-9])/g).map(p => `<p>${esc(p.trim())}</p>`).join("");
+  }
+
+  async function extractPdf(file) {
+    if (!window.pdfjsLib) throw new Error("pdf.js belum terload. Coba cek internet/CDN.");
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    let text = "";
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      text += `\n\n--- Halaman ${i} ---\n` + content.items.map(it => it.str).join(" ");
+    }
+    return text.trim();
+  }
+
+  async function generateMaterial() {
+    const text = $("#textInput").value.trim();
+    if (text.length < 80) return alert("Materi terlalu pendek. Tempel minimal beberapa paragraf dulu.");
+    const titleHint = $("#titleInput").value.trim();
+    const categoryHint = $("#categoryInput").value.trim();
+    setStatus("AI sedang memecah materi jadi konsep, flashcard, quiz, dan jadwal review...");
+    try {
+      const result = await callAI("buildMaterial", { text: text.slice(0, 30000), titleHint, categoryHint });
+      await saveLearningPack(text, titleHint, categoryHint, result);
+      setStatus("Selesai. Learning pack sudah tersimpan.");
+      $("#textInput").value = ""; $("#titleInput").value = ""; $("#categoryInput").value = "";
+      await refreshAll(); setView("library");
+    } catch (err) {
+      setStatus(`Gagal generate AI: ${err.message}\n\nSolusi cepat: cek .env / Vercel Environment Variables, coba model lain, atau simpan tanpa AI.`);
+    }
+  }
+
+  async function saveLearningPack(sourceText, titleHint, categoryHint, ai = {}) {
+    const m = {
+      id: uid("mat"),
+      user_id: state.user?.id || null,
+      title: ai.title || titleHint || "Materi Baru",
+      category: ai.category || categoryHint || "Umum",
+      source_text: sourceText,
+      summary_short: ai.summaryShort || ai.summary_short || "Belum ada ringkasan.",
+      summary_long: ai.summaryLong || ai.summary_long || "",
+      study_sections: normalizeStudySections(ai.studySections || ai.study_sections || ai.learningSections || ai.learning_sections, ai.summaryLong || ai.summary_long || ""),
+      key_takeaways: normalizeTakeaways(ai.keyTakeaways || ai.key_takeaways || []),
+      concepts: normalizeConcepts(ai.concepts),
+      mastery_score: 0,
+      created_at: now(), updated_at: now()
+    };
+    const flashcards = normalizeCards(ai.flashcards, m).map(c => ({ ...c, id: uid("card"), user_id: state.user?.id || null, material_id: m.id, ease: 2.5, interval_days: 1, repetitions: 0, lapses: 0, due_at: now(), last_reviewed_at: null, created_at: now(), updated_at: now() }));
+    const quizzes = normalizeQuizzes(ai.quizzes, m).map(q => ({ ...q, id: uid("quiz"), user_id: state.user?.id || null, material_id: m.id, created_at: now(), updated_at: now() }));
+    if (isCloud()) {
+      await insertMaterialCloud(m);
+      if (flashcards.length) { const { error } = await state.supa.from("flashcards").insert(flashcards); if (error) throw new Error(error.message); }
+      if (quizzes.length) { const { error } = await state.supa.from("quizzes").insert(quizzes); if (error) throw new Error(error.message); }
+    } else {
+      await put("materials", m);
+      for (const c of flashcards) await put("flashcards", c);
+      for (const q of quizzes) await put("quizzes", q);
+    }
+  }
+
+  async function insertMaterialCloud(material) {
+    const { error } = await state.supa.from("materials").insert(material);
+    if (!error) return;
+    const msg = String(error.message || error.details || "");
+    if (msg.includes("study_sections") || msg.includes("schema cache")) {
+      const fallback = { ...material };
+      delete fallback.study_sections;
+      const retry = await state.supa.from("materials").insert(fallback);
+      if (retry.error) throw new Error(retry.error.message);
+      return;
+    }
+    throw new Error(error.message);
+  }
+
+  function normalizeTakeaways(list = []) {
+    if (!Array.isArray(list)) return [];
+    return list.map(x => String(x || "").trim()).filter(Boolean).slice(0, 8);
+  }
+
+  function normalizeStudySections(list = [], summary = "") {
+    if (Array.isArray(list) && list.length) {
+      return list.slice(0, 8).map((x, i) => ({
+        title: String(x.title || x.heading || `Bagian ${i + 1}`).slice(0, 120),
+        explanation: String(x.explanation || x.content || x.body || "").slice(0, 1400),
+        example: String(x.example || x.contoh || "").slice(0, 700),
+        activeRecall: String(x.activeRecall || x.active_recall || x.question || "").slice(0, 400)
+      })).filter(x => x.title || x.explanation);
+    }
+    return splitIntoSections(summary);
+  }
+
+  function splitIntoSections(text = "") {
+    const clean = String(text || "").replace(/\r/g, "").trim();
+    if (!clean) return [];
+    const paras = clean.split(/\n{2,}|(?<=\.)\s+(?=[A-ZÀ-ÝA-Z0-9])/g).map(x => x.trim()).filter(Boolean);
+    return paras.slice(0, 6).map((p, i) => ({ title: `Bagian ${i + 1}`, explanation: p, example: "", activeRecall: "Apa inti dari bagian ini?" }));
+  }
+
+  function normalizeConcepts(list = []) {
+    if (!Array.isArray(list)) return [];
+    return list.slice(0, 12).map(c => ({
+      id: c.id || uid("concept"),
+      name: String(c.name || c.concept || "Konsep").slice(0, 100),
+      definition: String(c.definition || c.explanation || "").slice(0, 600),
+      example: String(c.example || "").slice(0, 400),
+      common_misconception: String(c.common_misconception || c.commonMisconception || c.misconception || "").slice(0, 400),
+      importance: String(c.importance || "medium")
+    }));
+  }
+  function normalizeCards(list = [], m) {
+    if (!Array.isArray(list) || !list.length) {
+      return (m.concepts || []).slice(0, 8).map(c => ({ concept: c.name, front: `Jelaskan konsep ${c.name}`, back: c.definition, difficulty: "medium" }));
+    }
+    return list.slice(0, 24).filter(c => c.front || c.question).map(c => ({ concept: c.concept || "", front: String(c.front || c.question).slice(0, 260), back: String(c.back || c.answer).slice(0, 900), difficulty: c.difficulty || "medium" }));
+  }
+  function normalizeQuizzes(list = [], m) {
+    if (!Array.isArray(list) || !list.length) return fallbackQuizzesFromMaterial(m);
+    const normalized = list.slice(0, 20).map(q => {
+      let options = Array.isArray(q.options) ? q.options.map(x => String(x || "").trim()).filter(Boolean) : [];
+      options = [...new Set(options)].slice(0, 4);
+      let raw = q.answerIndex ?? q.answer_index ?? q.correctIndex ?? q.correct_index;
+      let idx = Number.isInteger(raw) ? raw : Number.isInteger(Number(raw)) ? Number(raw) : -1;
+      if (idx >= options.length && idx >= 1 && idx <= options.length) idx -= 1;
+      if (idx < 0 && typeof q.answer === "string") {
+        const ans = q.answer.trim();
+        const letter = { A:0, B:1, C:2, D:3 }[ans.toUpperCase()];
+        idx = Number.isInteger(letter) ? letter : options.findIndex(o => o.toLowerCase() === ans.toLowerCase());
+      }
+      if (idx < 0 || idx >= options.length) idx = 0;
+      return {
+        concept: String(q.concept || "").slice(0, 120),
+        level: String(q.level || "understanding").slice(0, 40),
+        question: String(q.question || "").slice(0, 650),
+        options,
+        answer_index: idx,
+        explanation: String(q.explanation || "").slice(0, 1000)
+      };
+    }).filter(q => q.question && q.options.length >= 2);
+    return normalized.length >= 5 ? normalized : [...normalized, ...fallbackQuizzesFromMaterial(m)].slice(0, 12);
+  }
+
+  function fallbackQuizzesFromMaterial(m) {
+    const concepts = Array.isArray(m.concepts) ? m.concepts : [];
+    return concepts.slice(0, 8).map((c, i) => ({
+      concept: c.name || "Konsep",
+      level: i % 2 ? "understanding" : "definition",
+      question: `Apa inti dari konsep “${c.name || "konsep ini"}”?`,
+      options: [
+        c.definition || `Penjelasan utama tentang ${c.name || "konsep ini"}`,
+        c.common_misconception || "Pernyataan yang terdengar benar tetapi keliru",
+        c.example || "Contoh yang tidak terkait langsung",
+        "Semua jawaban di atas selalu benar"
+      ].map(x => String(x).slice(0, 180)),
+      answer_index: 0,
+      explanation: `Konsep ini perlu dipahami lewat definisi, contoh, dan batasan penggunaannya.`
+    }));
+  }
+
+  async function saveManual() {
+    const text = $("#textInput").value.trim();
+    if (!text) return alert("Isi teks materi dulu.");
+    await saveLearningPack(text, $("#titleInput").value.trim(), $("#categoryInput").value.trim(), { title: $("#titleInput").value.trim() || "Materi Manual", category: $("#categoryInput").value.trim() || "Umum", summaryShort: text.slice(0, 180), concepts: [], flashcards: [], quizzes: [] });
+    await refreshAll(); setView("library");
+  }
+
+  async function callAI(type, payload) {
+    const body = { type, provider: state.settings.provider, model: modelForProvider(), payload };
+    const res = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+    if (!data?.result) throw new Error("Server tidak mengembalikan result.");
+    return data.result;
+  }
+  function modelForProvider() {
+    if (state.settings.provider === "groq") return state.settings.groqModel;
+    if (state.settings.provider === "openrouter") return state.settings.openrouterModel;
+    return state.settings.geminiModel;
+  }
+
+  function setStatus(text) { const el = $("#statusBox"); el.hidden = false; el.textContent = text; }
+
+  function renderReview() {
+    const cards = dueCards();
+    const box = $("#reviewBox"); box.innerHTML = "";
+    if (!cards.length) { box.className = "review empty"; box.textContent = state.flashcards.length ? "Tidak ada kartu due sekarang." : "Belum ada flashcard."; return; }
+    box.className = "review";
+    state.currentReview = clamp(state.currentReview, 0, cards.length - 1);
+    const c = cards[state.currentReview], m = findMaterial(c.material_id || c.materialId);
+    const div = document.createElement("div"); div.className = "review-card";
+    div.innerHTML = `<span class="badge soft">${esc(materialTitle(m || {}))}</span><div class="review-question">${esc(c.front)}</div><button class="ghost" id="showAns">Tampilkan jawaban</button><div class="review-answer" id="answerBox" hidden>${esc(c.back)}</div><div class="action-row wrap" id="rateBtns" hidden><button class="danger" data-rate="again">Again</button><button class="ghost" data-rate="hard">Hard</button><button class="primary" data-rate="good">Good</button><button class="primary" data-rate="easy">Easy</button></div><p class="muted">${state.currentReview+1} dari ${cards.length} • retensi ±${Math.round(cardRetention(c)*100)}%</p>`;
+    box.appendChild(div);
+    $("#showAns").onclick = () => { $("#answerBox").hidden = false; $("#rateBtns").hidden = false; };
+    $$("[data-rate]", div).forEach(btn => btn.onclick = () => reviewCard(c, btn.dataset.rate));
+  }
+
+  async function reviewCard(card, rating) {
+    const updated = scheduleCard(card, rating);
+    const log = { id: uid("log"), user_id: state.user?.id || null, card_id: card.id, material_id: card.material_id || card.materialId, rating, correct: ["good","easy"].includes(rating), previous_due_at: cardDue(card), next_due_at: updated.due_at, created_at: now() };
+    if (isCloud()) {
+      const { error } = await state.supa.from("flashcards").update(updated).eq("id", card.id); if (error) throw new Error(error.message);
+      await state.supa.from("review_logs").insert(log);
+    } else {
+      await put("flashcards", { ...card, ...updated }); await put("review_logs", log);
+    }
+    await updateSmartStreak(rating);
+    state.currentReview += 1;
+    await refreshAll(); setView("review");
+  }
+
+  function scheduleCard(card, rating) {
+    let ease = Number(card.ease || 2.5), reps = Number(card.repetitions || 0), interval = Number(card.interval_days || 1), lapses = Number(card.lapses || 0);
+    if (rating === "again") { ease = Math.max(1.3, ease - .25); reps = 0; interval = 10 / 1440; lapses += 1; }
+    if (rating === "hard") { ease = Math.max(1.3, ease - .15); reps += 1; interval = Math.max(1, interval * 1.25); }
+    if (rating === "good") { reps += 1; interval = reps <= 1 ? 1 : Math.max(2, interval * ease); }
+    if (rating === "easy") { ease = Math.min(3.2, ease + .15); reps += 1; interval = reps <= 1 ? 3 : Math.max(4, interval * ease * 1.35); }
+    const due = new Date(Date.now() + interval * dayMs).toISOString();
+    return { ease, repetitions: reps, interval_days: interval, lapses, due_at: due, last_reviewed_at: now(), updated_at: now() };
+  }
+
+  async function updateSmartStreak(ratingOrScore) {
+    const score = typeof ratingOrScore === "number" ? ratingOrScore : (["good","easy"].includes(ratingOrScore) ? 100 : ratingOrScore === "hard" ? 70 : 0);
+    const today = new Date().toISOString().slice(0,10);
+    if (score >= 70 && state.settings.lastStreakDate !== today) {
+      state.settings.streak = (state.settings.streak || 0) + 1;
+      state.settings.lastStreakDate = today;
+      await saveSettings();
+    }
+  }
+
+  function quizPool(materialId) {
+    const existing = materialQuizzes(materialId).filter(q => q.question && Array.isArray(q.options) && q.options.length >= 2);
+    if (existing.length >= 5) return existing;
+    const m = findMaterial(materialId) || {};
+    const cards = materialCards(materialId);
+    const distractors = cards.map(c => c.back).filter(Boolean);
+    const generated = cards.slice(0, Math.max(0, 10 - existing.length)).map((c, i) => {
+      const opts = [c.back, ...distractors.filter(x => x !== c.back).slice(0,3)];
+      while (opts.length < 4) opts.push(i % 2 ? "Konsep berbeda yang tidak menjawab pertanyaan" : "Jawaban terlalu umum dan tidak spesifik");
+      return { id: uid("quiztemp"), material_id: materialId, concept: c.concept || "", level: i % 3 === 0 ? "application" : "understanding", question: c.front, options: opts.slice(0,4).map(x => String(x).slice(0,220)), answer_index: 0, explanation: c.back };
+    });
+    if (!generated.length && Array.isArray(m.concepts)) generated.push(...fallbackQuizzesFromMaterial(m));
+    return [...existing, ...generated].slice(0, 12);
+  }
+
+  function startQuiz(materialId) {
+    const quizzes = quizPool(materialId);
+    if (!quizzes.length) return alert("Belum ada quiz untuk materi ini.");
+    state.currentQuiz = { materialId, quizzes, index: 0, correct: 0, answered: false };
+    setView("library");
+    showQuiz();
+  }
+
+  function showQuiz() {
+    const qstate = state.currentQuiz; if (!qstate) return;
+    const q = qstate.quizzes[qstate.index];
+    const p = $("#detailPanel"); p.hidden = false;
+    const progress = Math.round((qstate.index) / qstate.quizzes.length * 100);
+    p.innerHTML = `
+      <div class="quiz-shell">
+        <div class="panel-head"><div><span class="badge soft">${esc(q.level || "quiz")}</span><h3>Quiz ${qstate.index + 1}/${qstate.quizzes.length}</h3><p class="muted">Pilih jawaban, baca feedback, lalu lanjut. Tidak auto-lompat lagi.</p></div><button class="ghost small" id="closeQuiz">Tutup</button></div>
+        <div class="quiz-progress"><i style="width:${progress}%"></i></div>
+        <h4 class="quiz-question">${esc(q.question)}</h4>
+        <div id="quizOptions" class="quiz-options">${q.options.map((o,i) => `<button class="quiz-option" data-i="${i}"><span>${String.fromCharCode(65+i)}</span><b>${esc(o)}</b></button>`).join("")}</div>
+        <div id="quizExplain" class="quiz-feedback" hidden></div>
+        <div class="action-row wrap quiz-actions"><button class="primary" id="quizNext" hidden>${qstate.index + 1 >= qstate.quizzes.length ? "Selesai" : "Lanjut"}</button></div>
+      </div>`;
+    $("#closeQuiz", p).onclick = () => { state.currentQuiz = null; p.hidden = true; };
+    $$(".quiz-option", p).forEach(btn => btn.onclick = () => answerQuiz(btn, q, qstate, p));
+  }
+
+  function answerQuiz(btn, q, qstate, panel) {
+    if (qstate.answered) return;
+    qstate.answered = true;
+    const chosen = Number(btn.dataset.i), answer = Number(q.answer_index || 0);
+    const correct = chosen === answer;
+    if (correct) qstate.correct += 1;
+    $$(".quiz-option", panel).forEach((b, i) => {
+      b.disabled = true;
+      b.classList.add(i === answer ? "correct" : i === chosen ? "wrong" : "dimmed");
+    });
+    const exp = $("#quizExplain", panel);
+    exp.hidden = false;
+    exp.innerHTML = `<b>${correct ? "Benar." : "Belum tepat."}</b><p>${esc(q.explanation || "Cek kembali konsepnya dari materi dan flashcard.")}</p>`;
+    const next = $("#quizNext", panel);
+    next.hidden = false;
+    next.onclick = async () => {
+      qstate.index += 1;
+      qstate.answered = false;
+      if (qstate.index >= qstate.quizzes.length) {
+        const score = Math.round(qstate.correct / qstate.quizzes.length * 100);
+        await updateSmartStreak(score);
+        panel.innerHTML = `<div class="quiz-result"><span class="badge ${score >= 70 ? "cloud" : "local"}">${score >= 70 ? "Lulus mastery" : "Perlu review"}</span><h3>Quiz selesai</h3><p>Skor kamu: <b>${score}%</b> (${qstate.correct}/${qstate.quizzes.length} benar)</p><p class="muted">Smart streak naik kalau skor minimal 70% dan hari ini belum naik.</p><button class="primary" id="backLibrary">Kembali ke Library</button></div>`;
+        state.currentQuiz = null;
+        await refreshAll();
+        $("#backLibrary", panel).onclick = () => { panel.hidden = true; setView("library"); };
+      } else showQuiz();
+    };
+  }
+
+  function renderTeachOptions() {
+    const s = $("#teachMaterial"); if (!s) return;
+    s.innerHTML = state.materials.map(m => `<option value="${m.id}">${esc(materialTitle(m))}</option>`).join("");
+  }
+  async function evaluateTeaching() {
+    const materialId = $("#teachMaterial").value; const m = findMaterial(materialId);
+    if (!m) return alert("Pilih materi dulu.");
+    const answer = $("#teachAnswer").value.trim(); if (answer.length < 50) return alert("Penjelasan terlalu pendek. Coba jelaskan lebih lengkap.");
+    const out = $("#teachOutput"); out.hidden = false; out.textContent = "AI sedang menilai pemahamanmu...";
+    try {
+      const result = await callAI("evaluateTeaching", { material: { title: m.title, summary: m.summary_long || m.summary_short, concepts: m.concepts || [] }, focus: $("#teachFocus").value.trim(), answer });
+      const score = Math.round(Number(result.masteryScore || result.mastery_score || 0));
+      out.innerHTML = `<div class="teach-score"><span>Skor Penguasaan</span><strong>${score}%</strong></div><div class="feedback-grid"><section><h4>Feedback</h4>${htmlParagraphs(result.feedback || "-")}</section><section><h4>Miskonsepsi</h4><ul>${(result.misconceptions || []).length ? (result.misconceptions || []).map(x => `<li>${esc(x)}</li>`).join("") : "<li>Tidak terdeteksi.</li>"}</ul></section><section><h4>Bagian yang Kurang</h4><ul>${(result.missingPoints || result.missing_points || []).length ? (result.missingPoints || result.missing_points || []).map(x => `<li>${esc(x)}</li>`).join("") : "<li>Tidak ada catatan khusus.</li>"}</ul></section><section><h4>Langkah Berikutnya</h4><p>${esc(result.nextAction || result.next_action || "Review kartu lemah.")}</p></section></div><div class="rubric-bars">${renderRubric(result.rubric || {})}</div>`;
+      const row = { id: uid("teach"), user_id: state.user?.id || null, material_id: materialId, answer_text: answer, result, created_at: now() };
+      if (isCloud()) await state.supa.from("teaching_sessions").insert(row); else await put("teaching_sessions", row);
+      await updateSmartStreak(score);
+      await refreshAll();
+    } catch (err) { out.textContent = `Gagal: ${err.message}`; }
+  }
+
+  function renderRubric(rubric = {}) {
+    const rows = [["accuracy", "Akurasi"], ["completeness", "Kelengkapan"], ["examples", "Contoh"], ["clarity", "Kejelasan"]];
+    return rows.map(([key, label]) => { const v = clamp(Math.round(Number(rubric[key] || 0)), 0, 100); return `<div><span>${label}</span><div class="bar"><i style="width:${v}%"></i></div><b>${v}%</b></div>`; }).join("");
+  }
+
+  async function deleteMaterial(id) {
+    if (!confirm("Hapus materi ini beserta flashcard dan quiz?")) return;
+    if (isCloud()) {
+      await state.supa.from("materials").delete().eq("id", id);
+      await state.supa.from("flashcards").delete().eq("material_id", id);
+      await state.supa.from("quizzes").delete().eq("material_id", id);
+    } else {
+      await del("materials", id);
+      for (const c of materialCards(id)) await del("flashcards", c.id);
+      for (const q of materialQuizzes(id)) await del("quizzes", q.id);
+    }
+    await refreshAll();
+  }
+
+  function fillSettings() {
+    $("#providerSelect").value = state.settings.provider;
+    $("#geminiModel").value = state.settings.geminiModel;
+    $("#groqModel").value = state.settings.groqModel;
+    $("#openrouterModel").value = state.settings.openrouterModel;
+    $("#supabaseUrl").value = state.settings.supabaseUrl;
+    $("#supabaseAnon").value = state.settings.supabaseAnon;
+  }
+
+  async function exportJSON() {
+    const data = { exportedAt: now(), settings: { ...state.settings, supabaseAnon: "" }, materials: state.materials, flashcards: state.flashcards, quizzes: state.quizzes, logs: state.logs, teaching: state.teaching };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+    const a = Object.assign(document.createElement("a"), { href: url, download: `aiyone-backup-${new Date().toISOString().slice(0,10)}.json` });
+    a.click(); URL.revokeObjectURL(url);
+  }
+  async function importJSON(file) {
+    const data = JSON.parse(await file.text());
+    if (!confirm("Import akan menambahkan data ke local database. Lanjut?")) return;
+    for (const m of data.materials || []) await put("materials", { ...m, user_id: null });
+    for (const c of data.flashcards || []) await put("flashcards", { ...c, user_id: null });
+    for (const q of data.quizzes || []) await put("quizzes", { ...q, user_id: null });
+    for (const l of data.logs || []) await put("review_logs", { ...l, user_id: null });
+    await refreshAll();
+  }
+
+  async function resetLocal() {
+    if (!confirm("Reset semua data lokal? Data cloud Supabase tidak ikut terhapus.")) return;
+    for (const s of ["materials", "flashcards", "quizzes", "review_logs", "teaching_sessions"]) await clear(s);
+    await refreshAll();
+  }
+
+  function bindEvents() {
+    $$(".nav-item").forEach(b => b.onclick = () => setView(b.dataset.view));
+    $$('[data-jump]').forEach(b => b.onclick = () => setView(b.dataset.jump));
+    $("#pdfInput").onchange = async (e) => {
+      const file = e.target.files[0]; if (!file) return;
+      setStatus("Membaca PDF...");
+      try { $("#textInput").value = await extractPdf(file); setStatus(`PDF terbaca: ${$("#textInput").value.length.toLocaleString("id-ID")} karakter.`); }
+      catch (err) { setStatus(`Gagal baca PDF: ${err.message}`); }
+    };
+    $("#generateBtn").onclick = generateMaterial;
+    $("#saveManualBtn").onclick = saveManual;
+    $("#searchInput").oninput = renderLibrary;
+    $("#refreshBtn").onclick = renderReview;
+    $("#teachBtn").onclick = evaluateTeaching;
+    $("#saveAiSettings").onclick = async () => {
+      state.settings.provider = $("#providerSelect").value; state.settings.geminiModel = $("#geminiModel").value.trim(); state.settings.groqModel = $("#groqModel").value.trim(); state.settings.openrouterModel = $("#openrouterModel").value.trim();
+      await saveSettings(); alert("AI settings tersimpan.");
+    };
+    $("#testAiBtn").onclick = async () => {
+      try { const r = await callAI("ping", { text: "Jawab singkat: AI server aktif." }); alert(`AI server aktif: ${r.message || JSON.stringify(r)}`); }
+      catch (e) { alert(`AI server gagal: ${e.message}`); }
+    };
+    $("#saveSupabaseBtn").onclick = async () => {
+      state.settings.supabaseUrl = normalizeSupabaseUrl($("#supabaseUrl").value);
+      state.settings.supabaseAnon = $("#supabaseAnon").value.trim();
+      await saveSettings();
+      await refreshAll();
+      alert("Koneksi Supabase tersimpan. Sekarang sign up/login.");
+    };
+    $("#clearSupabaseBtn").onclick = async () => { state.settings.supabaseUrl = ""; state.settings.supabaseAnon = ""; await saveSettings(); await refreshAll(); };
+    $("#signUpBtn").onclick = async () => authAction("signUp");
+    $("#loginBtn").onclick = async () => authAction("signInWithPassword");
+    $("#logoutBtn").onclick = async () => { if (state.supa) await state.supa.auth.signOut(); await refreshAll(); };
+    $("#exportBtn").onclick = exportJSON;
+    $("#importInput").onchange = e => e.target.files[0] && importJSON(e.target.files[0]);
+    $("#resetBtn").onclick = resetLocal;
+    window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); state.deferredInstall = e; $("#installBtn").hidden = false; });
+    $("#installBtn").onclick = async () => { if (state.deferredInstall) { state.deferredInstall.prompt(); state.deferredInstall = null; $("#installBtn").hidden = true; } };
+  }
+
+  async function authAction(kind) {
+    if (!state.supa) return alert("Isi Supabase URL dan anon key dulu.");
+    const email = $("#authEmail").value.trim(), password = $("#authPassword").value;
+    if (!email || !password) return alert("Isi email dan password dulu.");
+
+    const { data, error } = await state.supa.auth[kind]({ email, password });
+    if (error) return alert(error.message);
+
+    // Supabase kadang menyimpan session sedikit setelah response auth. Ambil session langsung
+    // supaya badge sidebar tidak terlihat kontradiktif saat alert login muncul.
+    let user = data?.session?.user || data?.user || null;
+    if (!user) {
+      const sessionRes = await state.supa.auth.getSession();
+      user = sessionRes.data?.session?.user || null;
+    }
+    state.user = user;
+    await loadData();
+    renderAll();
+
+    if (kind === "signUp" && !state.user) {
+      alert("Akun dibuat. Kalau email confirmation aktif, cek email dulu, lalu login lagi.");
+    } else {
+      alert(kind === "signUp" ? "Akun dibuat dan login berhasil." : "Login berhasil. Status Cloud sudah aktif.");
+    }
+  }
+
+  async function boot() {
+    db = await openDB(); await loadSettings(); await initSupabase(); await loadData(); bindEvents(); renderAll();
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+  }
+  boot().catch(err => { console.error(err); alert(`Aiyone gagal start: ${err.message}`); });
+})();
