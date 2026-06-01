@@ -237,7 +237,11 @@
             <label>Model Gemini<input id="geminiModel" value="gemini-2.5-flash-lite" /></label>
             <label>Model Groq<input id="groqModel" value="llama-3.1-8b-instant" /></label>
             <label>Model OpenRouter<input id="openrouterModel" value="google/gemini-2.0-flash-exp:free" /></label>
-            <button class="primary" id="saveAiSettings">Simpan AI Settings</button>
+            <div class="field-row">
+              <label>Mastery threshold (%)<input id="masteryThreshold" type="number" min="50" max="95" value="70" /></label>
+              <label>Target retensi review<input id="targetRetention" type="number" min="0.70" max="0.95" step="0.01" value="0.85" /></label>
+            </div>
+            <button class="primary" id="saveAiSettings">Simpan AI & Memory Settings</button>
             <button class="ghost" id="testAiBtn">Tes AI Server</button>
           </article>
 
@@ -275,12 +279,14 @@
 
           <article class="panel">
             <h3>Memory Engine</h3>
-            <p class="muted">Smart streak hanya naik kalau skor review/quiz minimal 70%. Kartu sulit muncul lebih cepat, kartu mudah makin jauh.</p>
+            <p class="muted">Memory Engine v2 memakai rating, confidence, waktu jawab, stability, difficulty, dan target retensi. Ini lebih dekat ke pendekatan FSRS daripada interval statis.</p>
             <div class="mini-table">
-              <span>Lupa</span><b>10 menit</b>
-              <span>Sulit</span><b>1 hari / interval pendek</b>
-              <span>Paham</span><b>interval normal</b>
-              <span>Mudah</span><b>interval panjang</b>
+              <span>Lupa</span><b>stability turun, due ±10 menit</b>
+              <span>Sulit</span><b>interval pendek + difficulty naik</b>
+              <span>Paham</span><b>stability naik sesuai confidence</b>
+              <span>Mudah</span><b>stability naik panjang</b>
+              <span>Pre-test</span><b>diagnosis awal</b>
+              <span>Post-test</span><b>bukti mastery</b>
             </div>
           </article>
         </div>
@@ -317,6 +323,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-  <script src="app.js?v=cloud-v5"></script>
+  <script src="app.js?v=psychopedagogy-v6"></script>
 </body>
 </html>

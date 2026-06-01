@@ -16,7 +16,7 @@
   let state = {
     materials: [], flashcards: [], quizzes: [], logs: [], teaching: [],
     user: null, supa: null, deferredInstall: null,
-    settings: defaultSettings(), currentReview: 0, currentQuiz: null, currentSession: null
+    settings: defaultSettings(), currentReview: 0, currentQuiz: null, currentSession: null, reviewStartedAt: 0
   };
 
   function defaultSettings() {
@@ -27,6 +27,8 @@
       openrouterModel: "google/gemini-2.0-flash-exp:free",
       supabaseUrl: "",
       supabaseAnon: "",
+      masteryThreshold: 70,
+      targetRetention: 0.85,
       streak: 0,
       lastStreakDate: ""
     };
@@ -180,8 +182,8 @@
     const last = cardLast(card);
     if (!last) return 0.35;
     const days = Math.max(0, (Date.now() - new Date(last).getTime()) / dayMs);
-    const interval = Math.max(card.interval_days || card.intervalDays || 1, 0.1);
-    return Math.exp(-days / (interval * 1.25));
+    const stability = Math.max(Number(card.stability || card.interval_days || card.intervalDays || 1), 0.1);
+    return Math.exp(-days / stability);
   }
   function memoryStatus(card) {
     const retention = cardRetention(card);
@@ -255,7 +257,7 @@
     el.querySelector("p").textContent = `${materialCards(m.id).length} flashcard • ${materialQuizzes(m.id).length} quiz • ${shortDate(materialDate(m))} • ${(m.summary_short || m.summaryShort || "").slice(0, 110)}`;
     el.querySelector(".open").onclick = () => showDetail(m.id);
     el.querySelector(".session-start")?.addEventListener("click", () => { state.currentSession = { materialId: m.id, step: 0, recall: {} }; setView("session"); });
-    el.querySelector(".quiz").onclick = () => startQuiz(m.id);
+    el.querySelector(".quiz").onclick = () => startQuiz(m.id, "practice");
     el.querySelector(".del").onclick = () => deleteMaterial(m.id);
     return el;
   }
@@ -266,7 +268,7 @@
     const p = $("#detailPanel"); p.hidden = false;
     const sections = m.study_sections || m.studySections || splitIntoSections(m.summary_long || m.summaryLong || "");
     p.innerHTML = `
-      <div class="panel-head detail-hero"><div><span class="badge soft">${esc(m.category || "Umum")}</span><h3>${esc(materialTitle(m))}</h3><p class="muted">${shortDate(materialDate(m))} • ${cards.length} flashcard • ${quizPool(id).length} quiz siap</p></div><div class="action-row wrap"><button class="primary small" id="startSessionFromDetail">Mulai sesi</button><button class="ghost small" id="startQuizFromDetail">Quiz</button><button class="ghost small" id="closeDetail">Tutup</button></div></div>
+      <div class="panel-head detail-hero"><div><span class="badge soft">${esc(m.category || "Umum")}</span><h3>${esc(materialTitle(m))}</h3><p class="muted">${shortDate(materialDate(m))} • ${cards.length} flashcard • ${quizPool(id).length} quiz siap</p></div><div class="action-row wrap"><button class="primary small" id="startSessionFromDetail">Mulai sesi</button><button class="ghost small" id="startPretestFromDetail">Pre-test</button><button class="ghost small" id="startQuizFromDetail">Quiz</button><button class="ghost small" id="startPosttestFromDetail">Post-test</button><button class="ghost small" id="closeDetail">Tutup</button></div></div>
       <div class="study-overview">
         <div><span class="section-label">Ringkasan Cepat</span><p>${esc(m.summary_short || m.summaryShort || "Belum ada ringkasan pendek.")}</p></div>
         ${renderTakeaways(m.key_takeaways || m.keyTakeaways || [])}
@@ -278,7 +280,9 @@
     `;
     $("#closeDetail").onclick = () => { p.hidden = true; };
     $("#startSessionFromDetail")?.addEventListener("click", () => { state.currentSession = { materialId: id, step: 0, recall: {} }; setView("session"); });
-    $("#startQuizFromDetail")?.addEventListener("click", () => startQuiz(id));
+    $("#startPretestFromDetail")?.addEventListener("click", () => startQuiz(id, "pretest"));
+    $("#startQuizFromDetail")?.addEventListener("click", () => startQuiz(id, "practice"));
+    $("#startPosttestFromDetail")?.addEventListener("click", () => startQuiz(id, "posttest"));
     setView("library");
   }
 
@@ -347,7 +351,7 @@
       mastery_score: 0,
       created_at: now(), updated_at: now()
     };
-    const flashcards = normalizeCards(ai.flashcards, m).map(c => ({ ...c, id: uid("card"), user_id: state.user?.id || null, material_id: m.id, ease: 2.5, interval_days: 1, repetitions: 0, lapses: 0, due_at: now(), last_reviewed_at: null, created_at: now(), updated_at: now() }));
+    const flashcards = normalizeCards(ai.flashcards, m).map(c => ({ ...c, id: uid("card"), user_id: state.user?.id || null, material_id: m.id, ease: 2.5, interval_days: 1, stability: 1, memory_difficulty: c.difficulty === "hard" ? 7 : c.difficulty === "easy" ? 3 : 5, repetitions: 0, lapses: 0, due_at: now(), last_reviewed_at: null, last_confidence: null, last_response_seconds: null, created_at: now(), updated_at: now() }));
     const quizzes = normalizeQuizzes(ai.quizzes, m).map(q => ({ ...q, id: uid("quiz"), user_id: state.user?.id || null, material_id: m.id, created_at: now(), updated_at: now() }));
     if (isCloud()) {
       await insertMaterialCloud(m);
@@ -488,20 +492,29 @@
     if (!cards.length) { box.className = "review empty"; box.textContent = state.flashcards.length ? "Tidak ada kartu due sekarang." : "Belum ada flashcard."; return; }
     box.className = "review";
     state.currentReview = clamp(state.currentReview, 0, cards.length - 1);
+    state.reviewStartedAt = Date.now();
     const c = cards[state.currentReview], m = findMaterial(c.material_id || c.materialId);
+    const ret = Math.round(cardRetention(c) * 100);
     const div = document.createElement("div"); div.className = "review-card";
-    div.innerHTML = `<span class="badge soft">${esc(materialTitle(m || {}))}</span><div class="review-question">${esc(c.front)}</div><button class="ghost" id="showAns">Tampilkan jawaban</button><div class="review-answer" id="answerBox" hidden>${esc(c.back)}</div><div class="action-row wrap" id="rateBtns" hidden><button class="danger" data-rate="again">Lupa</button><button class="ghost" data-rate="hard">Sulit</button><button class="primary" data-rate="good">Paham</button><button class="primary" data-rate="easy">Mudah</button></div><p class="muted">${state.currentReview+1} dari ${cards.length} • retensi ±${Math.round(cardRetention(c)*100)}% • pilih Lupa/Sulit/Paham/Mudah setelah melihat jawaban</p>`;
+    div.innerHTML = `<span class="badge soft">${esc(materialTitle(m || {}))}</span><div class="review-question">${esc(c.front)}</div><button class="ghost" id="showAns">Tampilkan jawaban</button><div class="review-answer" id="answerBox" hidden>${esc(c.back)}</div><div class="psychometric-row" id="reviewMeta" hidden><label>Confidence <select id="confidenceSelect"><option value="1">1 — nebak</option><option value="2">2 — ragu</option><option value="3" selected>3 — cukup yakin</option><option value="4">4 — yakin</option><option value="5">5 — sangat yakin</option></select></label><p class="muted">Aiyone memakai confidence + waktu jawab untuk menyesuaikan jadwal review berikutnya.</p></div><div class="action-row wrap" id="rateBtns" hidden><button class="danger" data-rate="again">Lupa</button><button class="ghost" data-rate="hard">Sulit</button><button class="primary" data-rate="good">Paham</button><button class="primary" data-rate="easy">Mudah</button></div><p class="muted">${state.currentReview+1} dari ${cards.length} • prediksi retensi ±${ret}% • stability ${Number(c.stability || c.interval_days || 1).toFixed(1)} hari</p>`;
     box.appendChild(div);
-    $("#showAns").onclick = () => { $("#answerBox").hidden = false; $("#rateBtns").hidden = false; };
-    $$("[data-rate]", div).forEach(btn => btn.onclick = () => reviewCard(c, btn.dataset.rate));
+    $("#showAns").onclick = () => { $("#answerBox").hidden = false; $("#rateBtns").hidden = false; $("#reviewMeta").hidden = false; };
+    $$("[data-rate]", div).forEach(btn => btn.onclick = () => {
+      const meta = {
+        confidence: Number($("#confidenceSelect")?.value || 3),
+        responseSeconds: Math.max(1, Math.round((Date.now() - state.reviewStartedAt) / 1000)),
+        retentionBefore: cardRetention(c)
+      };
+      reviewCard(c, btn.dataset.rate, meta);
+    });
   }
 
-  async function reviewCard(card, rating) {
-    const updated = scheduleCard(card, rating);
-    const log = { id: uid("log"), user_id: state.user?.id || null, card_id: card.id, material_id: card.material_id || card.materialId, rating, correct: ["good","easy"].includes(rating), previous_due_at: cardDue(card), next_due_at: updated.due_at, created_at: now() };
+  async function reviewCard(card, rating, meta = {}) {
+    const updated = scheduleCard(card, rating, meta);
+    const log = { id: uid("log"), user_id: state.user?.id || null, card_id: card.id, material_id: card.material_id || card.materialId, rating, correct: ["good","easy"].includes(rating), previous_due_at: cardDue(card), next_due_at: updated.due_at, response_seconds: meta.responseSeconds || null, confidence: meta.confidence || null, retention_before: meta.retentionBefore || null, created_at: now() };
     if (isCloud()) {
       const { error } = await state.supa.from("flashcards").update(updated).eq("id", card.id); if (error) throw new Error(error.message);
-      await state.supa.from("review_logs").insert(log);
+      await insertReviewLog(log);
     } else {
       await put("flashcards", { ...card, ...updated }); await put("review_logs", log);
     }
@@ -510,20 +523,47 @@
     await refreshAll(); setView("review");
   }
 
-  function scheduleCard(card, rating) {
-    let ease = Number(card.ease || 2.5), reps = Number(card.repetitions || 0), interval = Number(card.interval_days || 1), lapses = Number(card.lapses || 0);
-    if (rating === "again") { ease = Math.max(1.3, ease - .25); reps = 0; interval = 10 / 1440; lapses += 1; }
-    if (rating === "hard") { ease = Math.max(1.3, ease - .15); reps += 1; interval = Math.max(1, interval * 1.25); }
-    if (rating === "good") { reps += 1; interval = reps <= 1 ? 1 : Math.max(2, interval * ease); }
-    if (rating === "easy") { ease = Math.min(3.2, ease + .15); reps += 1; interval = reps <= 1 ? 3 : Math.max(4, interval * ease * 1.35); }
+  async function insertReviewLog(log) {
+    if (!isCloud()) return put("review_logs", log);
+    const { error } = await state.supa.from("review_logs").insert(log);
+    if (!error) return;
+    const fallback = { id: log.id, user_id: log.user_id, card_id: log.card_id || null, material_id: log.material_id || null, rating: log.rating || null, correct: !!log.correct, previous_due_at: log.previous_due_at || null, next_due_at: log.next_due_at || null, created_at: log.created_at || now() };
+    const retry = await state.supa.from("review_logs").insert(fallback);
+    if (retry.error) throw new Error(retry.error.message);
+  }
+
+  function scheduleCard(card, rating, meta = {}) {
+    let ease = Number(card.ease || 2.5), reps = Number(card.repetitions || 0), lapses = Number(card.lapses || 0);
+    let stability = Math.max(Number(card.stability || card.interval_days || 1), 0.08);
+    let difficulty = clamp(Number(card.memory_difficulty || (card.difficulty === "hard" ? 7 : card.difficulty === "easy" ? 3 : 5)), 1, 10);
+    const confidence = clamp(Number(meta.confidence || 3), 1, 5);
+    const seconds = Math.max(Number(meta.responseSeconds || 30), 1);
+    const speedFactor = seconds < 12 ? 1.08 : seconds > 90 ? 0.88 : 1;
+    const confidenceFactor = 0.82 + confidence * 0.08;
+    const retention = clamp(Number(meta.retentionBefore ?? cardRetention(card)), 0.05, 0.99);
+
+    if (rating === "again") {
+      ease = Math.max(1.3, ease - .32); reps = 0; lapses += 1; stability = 0.12; difficulty = clamp(difficulty + .9, 1, 10);
+    }
+    if (rating === "hard") {
+      ease = Math.max(1.3, ease - .16); reps += 1; stability = Math.max(1, stability * (1.12 + confidence * .04) * speedFactor * Math.max(.78, retention)); difficulty = clamp(difficulty + .25, 1, 10);
+    }
+    if (rating === "good") {
+      reps += 1; stability = Math.max(1.2, stability * (1.85 + (ease - 2.3) * .25) * confidenceFactor * speedFactor); difficulty = clamp(difficulty - .12, 1, 10);
+    }
+    if (rating === "easy") {
+      ease = Math.min(3.3, ease + .16); reps += 1; stability = Math.max(3, stability * (2.65 + confidence * .18) * speedFactor); difficulty = clamp(difficulty - .35, 1, 10);
+    }
+    const target = clamp(Number(state.settings.targetRetention || 0.85), .70, .95);
+    const interval = Math.max(10 / 1440, -stability * Math.log(target));
     const due = new Date(Date.now() + interval * dayMs).toISOString();
-    return { ease, repetitions: reps, interval_days: interval, lapses, due_at: due, last_reviewed_at: now(), updated_at: now() };
+    return { ease, repetitions: reps, interval_days: interval, stability, memory_difficulty: difficulty, lapses, due_at: due, last_reviewed_at: now(), last_confidence: confidence, last_response_seconds: seconds, updated_at: now() };
   }
 
   async function updateSmartStreak(ratingOrScore) {
     const score = typeof ratingOrScore === "number" ? ratingOrScore : (["good","easy"].includes(ratingOrScore) ? 100 : ratingOrScore === "hard" ? 70 : 0);
     const today = new Date().toISOString().slice(0,10);
-    if (score >= 70 && state.settings.lastStreakDate !== today) {
+    if (score >= Number(state.settings.masteryThreshold || 70) && state.settings.lastStreakDate !== today) {
       state.settings.streak = (state.settings.streak || 0) + 1;
       state.settings.lastStreakDate = today;
       await saveSettings();
@@ -545,11 +585,23 @@
     return [...existing, ...generated].slice(0, 12);
   }
 
-  function startQuiz(materialId) {
-    const quizzes = quizPool(materialId);
+  function startQuiz(materialId, mode = "practice") {
+    let quizzes = quizPool(materialId);
     if (!quizzes.length) return alert("Belum ada quiz untuk materi ini.");
-    state.currentQuiz = { materialId, quizzes, index: 0, correct: 0, answered: false, mistakes: [] };
+    if (mode === "pretest") quizzes = shuffle(quizzes).slice(0, Math.min(8, quizzes.length));
+    if (mode === "posttest") quizzes = shuffle(quizzes).slice(0, Math.min(12, quizzes.length));
+    state.currentQuiz = { materialId, mode, quizzes, index: 0, correct: 0, answered: false, mistakes: [], startedAt: Date.now() };
     showQuiz();
+  }
+
+  function shuffle(list) {
+    return [...list].map(x => [Math.random(), x]).sort((a,b) => a[0] - b[0]).map(x => x[1]);
+  }
+
+  function quizModeLabel(mode) {
+    if (mode === "pretest") return "Pre-test diagnostik";
+    if (mode === "posttest") return "Post-test mastery";
+    return "Quiz latihan";
   }
 
   function showQuiz() {
@@ -561,7 +613,7 @@
     const progress = Math.round((qstate.index) / qstate.quizzes.length * 100);
     p.innerHTML = `
       <div class="quiz-shell">
-        <div class="panel-head"><div><span class="badge soft">${esc(q.level || "quiz")}</span><h3>Quiz ${qstate.index + 1}/${qstate.quizzes.length}</h3><p class="muted">Pilih jawaban, baca feedback, lalu lanjut. Tidak auto-lompat lagi.</p></div><button class="ghost small" id="closeQuiz">Tutup</button></div>
+        <div class="panel-head"><div><span class="badge soft">${esc(quizModeLabel(qstate.mode))}</span><h3>Quiz ${qstate.index + 1}/${qstate.quizzes.length}</h3><p class="muted">Level: ${esc(q.level || "understanding")} • target mastery ${Number(state.settings.masteryThreshold || 70)}%.</p></div><button class="ghost small" id="closeQuiz">Tutup</button></div>
         <div class="quiz-progress"><i style="width:${progress}%"></i></div>
         <h4 class="quiz-question">${esc(q.question)}</h4>
         <div id="quizOptions" class="quiz-options">${q.options.map((o,i) => `<button class="quiz-option" data-i="${i}"><span>${String.fromCharCode(65+i)}</span><b>${esc(o)}</b></button>`).join("")}</div>
@@ -592,9 +644,10 @@
       qstate.answered = false;
       if (qstate.index >= qstate.quizzes.length) {
         const score = Math.round(qstate.correct / qstate.quizzes.length * 100);
+        await applyQuizResults(qstate.materialId, score, qstate.mistakes, qstate.mode, qstate.startedAt);
         await updateSmartStreak(score);
         const mistakesHtml = qstate.mistakes.length ? `<div class="mistake-list"><h4>Soal yang perlu diulang</h4>${qstate.mistakes.map((x, i) => `<div class="flash-mini"><b>${i+1}. ${esc(x.question)}</b><p><b>Jawaban benar:</b> ${esc(x.correct)}</p><p class="muted">${esc(x.explanation || "Cek konsep terkait dari materi.")}</p></div>`).join("")}</div>` : `<p class="muted">Tidak ada soal salah. Coba teaching mode untuk memastikan kamu bisa menjelaskan ulang.</p>`;
-        panel.innerHTML = `<div class="quiz-result"><span class="badge ${score >= 70 ? "cloud" : "local"}">${score >= 70 ? "Lulus mastery" : "Perlu review"}</span><h3>Quiz selesai</h3><p>Skor kamu: <b>${score}%</b> (${qstate.correct}/${qstate.quizzes.length} benar)</p><p class="muted">Smart streak naik kalau skor minimal 70% dan hari ini belum naik.</p>${mistakesHtml}<div class="action-row wrap"><button class="primary" id="retryWrong">Ulangi konsep salah</button><button class="ghost" id="goTeachAfterQuiz">Teaching Mode</button><button class="ghost" id="backLibrary">Kembali ke Library</button></div></div>`;
+        panel.innerHTML = `<div class="quiz-result"><span class="badge ${score >= 70 ? "cloud" : "local"}">${score >= 70 ? "Lulus mastery" : "Perlu review"}</span><h3>Quiz selesai</h3><p>Skor kamu: <b>${score}%</b> (${qstate.correct}/${qstate.quizzes.length} benar)</p><p class="muted">Smart streak naik kalau skor minimal ${Number(state.settings.masteryThreshold || 70)}% dan hari ini belum naik. Pre-test dipakai sebagai diagnosis, post-test sebagai bukti mastery.</p>${mistakesHtml}<div class="action-row wrap"><button class="primary" id="retryWrong">Ulangi konsep salah</button><button class="ghost" id="goTeachAfterQuiz">Teaching Mode</button><button class="ghost" id="backLibrary">Kembali ke Library</button></div></div>`;
         const doneMaterialId = qstate.materialId;
         state.currentQuiz = null;
         await refreshAll();
@@ -603,6 +656,26 @@
         $("#backLibrary", panel).onclick = () => { closeQuizModal(); setView("library"); };
       } else showQuiz();
     };
+  }
+
+  async function applyQuizResults(materialId, score, mistakes = [], mode = "practice", startedAt = Date.now()) {
+    const m = findMaterial(materialId);
+    if (!m) return;
+    const updatedMaterial = { ...m, mastery_score: Math.max(Number(m.mastery_score || 0), score), updated_at: now() };
+    const conceptsWrong = new Set(mistakes.map(x => String(x.question || "").toLowerCase()));
+    const dueSoon = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    const cardsToNudge = materialCards(materialId).filter(c => [...conceptsWrong].some(q => q.includes(String(c.concept || "").toLowerCase()) || q.includes(String(c.front || "").slice(0, 30).toLowerCase()))).slice(0, 5);
+    const log = { id: uid("log"), user_id: state.user?.id || null, card_id: null, material_id: materialId, rating: `quiz-${mode}-${score}`, correct: score >= Number(state.settings.masteryThreshold || 70), previous_due_at: null, next_due_at: null, score, quiz_mode: mode, response_seconds: Math.max(1, Math.round((Date.now() - startedAt) / 1000)), confidence: null, retention_before: null, created_at: now() };
+    if (isCloud()) {
+      const { error } = await state.supa.from("materials").update({ mastery_score: updatedMaterial.mastery_score, updated_at: updatedMaterial.updated_at }).eq("id", materialId);
+      if (error) console.warn(error.message);
+      await insertReviewLog(log);
+      for (const c of cardsToNudge) await state.supa.from("flashcards").update({ due_at: dueSoon, updated_at: now() }).eq("id", c.id);
+    } else {
+      await put("materials", updatedMaterial);
+      await put("review_logs", log);
+      for (const c of cardsToNudge) await put("flashcards", { ...c, due_at: dueSoon, updated_at: now() });
+    }
   }
 
   function renderTeachOptions() {
@@ -649,6 +722,8 @@
     $("#geminiModel").value = state.settings.geminiModel;
     $("#groqModel").value = state.settings.groqModel;
     $("#openrouterModel").value = state.settings.openrouterModel;
+    if ($("#masteryThreshold")) $("#masteryThreshold").value = state.settings.masteryThreshold || 70;
+    if ($("#targetRetention")) $("#targetRetention").value = state.settings.targetRetention || 0.85;
     $("#supabaseUrl").value = state.settings.supabaseUrl;
     $("#supabaseAnon").value = state.settings.supabaseAnon;
   }
@@ -717,8 +792,10 @@
       <div class="action-row wrap session-actions">
         <button class="ghost" id="prevStep" ${step <= 0 ? "disabled" : ""}>Sebelumnya</button>
         <button class="primary" id="nextStep">${step + 1 >= sections.length ? "Selesai Baca" : "Saya paham, lanjut"}</button>
+        <button class="ghost" id="sessionPretest">Pre-test</button>
         <button class="ghost" id="sessionFlash">Review Flashcard</button>
         <button class="ghost" id="sessionQuiz">Quiz</button>
+        <button class="ghost" id="sessionPosttest">Post-test</button>
         <button class="ghost" id="sessionTeach">Teaching Mode</button>
       </div>`;
     const savedRecall = state.currentSession.recall?.[step] || "";
@@ -726,8 +803,10 @@
     $("#sessionRecall", box).oninput = e => { state.currentSession.recall[step] = e.target.value; };
     $("#prevStep", box).onclick = () => { state.currentSession.step = Math.max(0, step - 1); renderSession(); };
     $("#nextStep", box).onclick = () => { if (step + 1 >= sections.length) { startQuiz(m.id); } else { state.currentSession.step = step + 1; renderSession(); } };
+    $("#sessionPretest", box).onclick = () => startQuiz(m.id, "pretest");
     $("#sessionFlash", box).onclick = () => setView("review");
-    $("#sessionQuiz", box).onclick = () => startQuiz(m.id);
+    $("#sessionQuiz", box).onclick = () => startQuiz(m.id, "practice");
+    $("#sessionPosttest", box).onclick = () => startQuiz(m.id, "posttest");
     $("#sessionTeach", box).onclick = () => { setView("teach"); $("#teachMaterial").value = m.id; };
   }
 
@@ -827,8 +906,13 @@
     $("#refreshBtn").onclick = renderReview;
     $("#teachBtn").onclick = evaluateTeaching;
     $("#saveAiSettings").onclick = async () => {
-      state.settings.provider = $("#providerSelect").value; state.settings.geminiModel = $("#geminiModel").value.trim(); state.settings.groqModel = $("#groqModel").value.trim(); state.settings.openrouterModel = $("#openrouterModel").value.trim();
-      await saveSettings(); alert("AI settings tersimpan.");
+      state.settings.provider = $("#providerSelect").value;
+      state.settings.geminiModel = $("#geminiModel").value.trim();
+      state.settings.groqModel = $("#groqModel").value.trim();
+      state.settings.openrouterModel = $("#openrouterModel").value.trim();
+      state.settings.masteryThreshold = clamp(Number($("#masteryThreshold")?.value || 70), 50, 95);
+      state.settings.targetRetention = clamp(Number($("#targetRetention")?.value || 0.85), 0.7, 0.95);
+      await saveSettings(); alert("AI & Memory settings tersimpan.");
     };
     $("#testAiBtn").onclick = async () => {
       try { const r = await callAI("ping", { text: "Jawab singkat: AI server aktif." }); alert(`AI server aktif: ${r.message || JSON.stringify(r)}`); }

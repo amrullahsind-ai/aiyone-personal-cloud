@@ -42,3 +42,9 @@ hr{border:0;border-top:1px solid var(--line);margin:20px 0}.import-label{display
   .mobile-topbar,.bottom-nav,.drawer-overlay,.drawer-close{display:none}.shell{display:grid;grid-template-columns:300px 1fr}.sidebar{position:sticky;top:0;transform:none;height:100vh;width:auto;box-shadow:none;border-right:1px solid rgba(255,255,255,.08)}.main{padding:48px 44px;max-width:none}.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px}.topbar h2{font-size:2.4rem;margin:.15rem 0 0}.two{grid-template-columns:1fr 1fr}.metrics{grid-template-columns:repeat(4,1fr)}.field-row{grid-template-columns:1fr 1fr}.concept-grid{grid-template-columns:repeat(2,1fr)}.feedback-grid{grid-template-columns:repeat(2,1fr)}.study-overview{grid-template-columns:1.2fr .8fr}.session-actions{bottom:16px}.quiz-modal-card{padding:28px}
 }
 @media (min-width: 1200px){.concept-grid{grid-template-columns:repeat(3,1fr)}}
+
+/* v6 psychopedagogy upgrades */
+.psychometric-row{margin:14px 0;padding:14px;border:1px solid var(--line);border-radius:18px;background:#fbfcff;display:grid;gap:8px}
+.psychometric-row label{margin:0;display:grid;gap:8px}.psychometric-row select{max-width:260px}
+.quiz-shell .badge.soft{max-width:max-content}.quiz-result .mistake-list{margin-top:16px}.session-actions .ghost{white-space:nowrap}
+@media (min-width:900px){.psychometric-row{grid-template-columns:280px 1fr;align-items:center}.psychometric-row p{margin:0}.session-actions{gap:8px}}

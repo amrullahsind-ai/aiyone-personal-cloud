@@ -1,6 +1,16 @@
-# Aiyone Personal Cloud Edition v5
+# Aiyone Personal Psychopedagogy Edition v6
 
-Aiyone v5 adalah versi mobile-first dari Aiyone Personal Cloud: PWA belajar personal dengan AI server, Supabase cloud database, sesi belajar terarah, quiz full-screen, teaching mode, flashcard memory rating, dan dashboard aksi harian.
+Aiyone v6 adalah PWA belajar personal dengan AI server, Supabase cloud database opsional, sesi belajar terarah, quiz full-screen, teaching mode, flashcard memory rating, dashboard aksi harian, dan Memory Engine v2 yang lebih psikopedagogis.
+
+## Yang baru di v6
+
+- Memory Engine v2: rating + confidence + waktu jawab + stability + difficulty + target retention.
+- Pre-test dan post-test pada Sesi Belajar untuk diagnosis awal dan bukti mastery.
+- Smart streak mengikuti mastery threshold yang bisa diatur di Settings.
+- Quiz score disimpan ke riwayat aktivitas dan mastery score materi.
+- Kartu dari konsep yang salah saat quiz didorong muncul lebih cepat.
+- Prompt AI diperkuat dengan cognitive load, scaffolding, active recall, retrieval practice, elaboration, dan misconception check.
+- Schema Supabase diperluas untuk field psikometrik: confidence, response time, retention_before, stability, memory_difficulty.
 
 ## Jalankan lokal
 
@@ -11,6 +21,17 @@ node server.js
 ```
 
 Buka `http://localhost:4173`.
+
+## Windows
+
+Kalau di Windows CMD:
+
+```bat
+copy .env.example .env
+node server.js
+```
+
+Jangan double click `server.js`; jalankan lewat Terminal/Command Prompt.
 
 ## Deploy ke Vercel
 
@@ -32,10 +53,4 @@ OPENROUTER_API_KEY=...
 
 Jalankan `supabase/schema.sql` di SQL Editor, lalu masukkan Project URL dan anon key/publishable key di Settings Aiyone.
 
-## Catatan v5
-
-- Mobile memakai hamburger drawer + bottom nav.
-- Quiz tampil full-screen, tidak lagi nyempil di Library.
-- Setelah generate materi, Aiyone langsung membuka Sesi Belajar Terarah.
-- Prompt AI dibuat lebih cocok untuk modul belajar bertahap.
-- Service worker cache dinaikkan ke v5.
+Kalau kamu sudah pernah menjalankan schema versi lama, schema v6 tetap aman dirun ulang karena memakai `add column if not exists`.
