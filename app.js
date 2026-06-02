@@ -163,14 +163,16 @@
     renderSync(); renderProfile(); renderDashboard(); renderLibrary(); renderReview(); renderTeachOptions(); renderSessionOptions(); renderAnalytics(); fillSettings();
   }
 
-  function scrollToTarget(target, behavior = "smooth") {
+  function scrollToTarget(target, behavior = "auto", pulse = false) {
     const el = typeof target === "string" ? $(target) : target;
     const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
     const mode = reduceMotion ? "auto" : behavior;
     if (!el) { window.scrollTo({ top: 0, behavior: mode }); return; }
     el.scrollIntoView({ behavior: mode, block: "start", inline: "nearest" });
-    el.classList?.add("focus-pulse");
-    window.setTimeout(() => el.classList?.remove("focus-pulse"), 900);
+    if (pulse) {
+      el.classList?.add("focus-pulse");
+      window.setTimeout(() => el.classList?.remove("focus-pulse"), 650);
+    }
   }
 
   function setView(id, options = {}) {
@@ -186,7 +188,7 @@
     if (id === "teach") renderTeachOptions();
     if (id === "session") { renderSessionOptions(); renderSession(); }
     if (id === "analytics") renderAnalytics();
-    requestAnimationFrame(() => scrollToTarget(options.target || `#${id}`, options.behavior || "smooth"));
+    requestAnimationFrame(() => scrollToTarget(options.target || `#${id}`, options.behavior || (options.target ? "smooth" : "auto"), !!options.pulse));
   }
 
   function renderSync() {
