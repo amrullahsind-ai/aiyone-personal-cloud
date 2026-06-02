@@ -1,56 +1,45 @@
-# Aiyone Personal Psychopedagogy Edition v6
+# Aiyone Personal v8 — Auto Cloud Profile
 
-Aiyone v6 adalah PWA belajar personal dengan AI server, Supabase cloud database opsional, sesi belajar terarah, quiz full-screen, teaching mode, flashcard memory rating, dashboard aksi harian, dan Memory Engine v2 yang lebih psikopedagogis.
+Versi ini memindahkan login dan sinkronisasi ke tombol **Profil** di pojok kanan atas. Settings tidak lagi dipakai untuk memasukkan Supabase URL/anon key.
 
-## Yang baru di v6
+## Perubahan v8
 
-- Memory Engine v2: rating + confidence + waktu jawab + stability + difficulty + target retention.
-- Pre-test dan post-test pada Sesi Belajar untuk diagnosis awal dan bukti mastery.
-- Smart streak mengikuti mastery threshold yang bisa diatur di Settings.
-- Quiz score disimpan ke riwayat aktivitas dan mastery score materi.
-- Kartu dari konsep yang salah saat quiz didorong muncul lebih cepat.
-- Prompt AI diperkuat dengan cognitive load, scaffolding, active recall, retrieval practice, elaboration, dan misconception check.
-- Schema Supabase diperluas untuk field psikometrik: confidence, response time, retention_before, stability, memory_difficulty.
+- Supabase URL dan anon key dibaca otomatis dari server/Vercel Environment Variables.
+- User cukup klik **Profil → Login**. Setelah login, data lokal otomatis sync ke cloud.
+- UI profil muncul di pojok kanan atas, dengan status akun dan tombol sync ulang/logout.
+- Settings hanya untuk AI, memory engine, backup, dan reset local.
+- Tetap kompatibel dengan database Supabase lama selama migrasi v6/v7 sudah dijalankan.
 
 ## Jalankan lokal
 
 ```bash
-cp .env.example .env
-# isi GEMINI_API_KEY di .env
+copy .env.example .env
+# isi GEMINI_API_KEY, SUPABASE_URL, SUPABASE_ANON_KEY di .env
 node server.js
 ```
 
 Buka `http://localhost:4173`.
 
-## Windows
-
-Kalau di Windows CMD:
-
-```bat
-copy .env.example .env
-node server.js
-```
-
-Jangan double click `server.js`; jalankan lewat Terminal/Command Prompt.
-
 ## Deploy ke Vercel
 
-Isi Environment Variables:
+Isi Environment Variables di Vercel:
 
 ```env
 GEMINI_API_KEY=...
 AI_PROVIDER=gemini
+SUPABASE_URL=https://xxxx.supabase.co
+SUPABASE_ANON_KEY=eyJ...
 ```
 
-Opsional:
+Opsional fallback AI:
 
 ```env
 GROQ_API_KEY=...
 OPENROUTER_API_KEY=...
 ```
 
+Setelah deploy, buka Aiyone → klik Profil pojok kanan atas → login. Data akan auto sync.
+
 ## Supabase
 
-Jalankan `supabase/schema.sql` di SQL Editor, lalu masukkan Project URL dan anon key/publishable key di Settings Aiyone.
-
-Kalau kamu sudah pernah menjalankan schema versi lama, schema v6 tetap aman dirun ulang karena memakai `add column if not exists`.
+Tidak perlu isi kode Supabase di Settings. Kalau database lama error kolom, baca `MIGRASI_SUPABASE_AMAN.md`.

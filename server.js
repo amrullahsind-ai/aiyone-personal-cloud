@@ -2,6 +2,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const generate = require("./api/generate.js");
+const config = require("./api/config.js");
 
 function loadEnv() {
   const file = path.join(__dirname, ".env");
@@ -56,6 +57,7 @@ function serveFile(req, res) {
 
 const server = http.createServer((req, res) => {
   if (req.url.startsWith("/api/generate")) return generate(req, res);
+  if (req.url.startsWith("/api/config")) return config(req, res);
   return serveFile(req, res);
 });
 

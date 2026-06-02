@@ -15,8 +15,8 @@
   let db;
   let state = {
     materials: [], flashcards: [], quizzes: [], logs: [], teaching: [],
-    user: null, supa: null, deferredInstall: null,
-    settings: defaultSettings(), currentReview: 0, currentQuiz: null, currentSession: null, reviewStartedAt: 0
+    user: null, supa: null, supabaseConfig: null, deferredInstall: null,
+    settings: defaultSettings(), currentReview: 0, currentQuiz: null, currentFlash: null, currentSession: null, reviewStartedAt: 0
   };
 
   function defaultSettings() {
@@ -74,10 +74,28 @@
   }
   async function saveSettings() { await put("settings", { id: "settings", data: state.settings }); }
 
+  async function loadPublicConfig() {
+    state.supabaseConfig = null;
+    try {
+      const res = await fetch("/api/config", { cache: "no-store" });
+      if (!res.ok) return;
+      const cfg = await res.json();
+      if (cfg?.supabaseUrl && cfg?.supabaseAnonKey) {
+        state.supabaseConfig = {
+          supabaseUrl: normalizeSupabaseUrl(cfg.supabaseUrl),
+          supabaseAnon: cfg.supabaseAnonKey,
+          source: cfg.source || "server"
+        };
+      }
+    } catch (_) {
+      // Local static fallback: kalau config endpoint belum ada, pakai setting lama bila tersedia.
+    }
+  }
+
   async function initSupabase() {
     state.supa = null; state.user = null;
-    const supabaseUrl = normalizeSupabaseUrl(state.settings.supabaseUrl);
-    const supabaseAnon = state.settings.supabaseAnon;
+    const supabaseUrl = normalizeSupabaseUrl(state.supabaseConfig?.supabaseUrl || state.settings.supabaseUrl || "");
+    const supabaseAnon = state.supabaseConfig?.supabaseAnon || state.settings.supabaseAnon || "";
     if (!supabaseUrl || !supabaseAnon || !window.supabase) return;
     state.supa = window.supabase.createClient(supabaseUrl, supabaseAnon, {
       auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
@@ -135,16 +153,27 @@
 
   async function refreshAll() {
     await loadSettings();
+    await loadPublicConfig();
     await initSupabase();
     await loadData();
     renderAll();
   }
 
   function renderAll() {
-    renderSync(); renderDashboard(); renderLibrary(); renderReview(); renderTeachOptions(); renderSessionOptions(); renderAnalytics(); fillSettings();
+    renderSync(); renderProfile(); renderDashboard(); renderLibrary(); renderReview(); renderTeachOptions(); renderSessionOptions(); renderAnalytics(); fillSettings();
   }
 
-  function setView(id) {
+  function scrollToTarget(target, behavior = "smooth") {
+    const el = typeof target === "string" ? $(target) : target;
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    const mode = reduceMotion ? "auto" : behavior;
+    if (!el) { window.scrollTo({ top: 0, behavior: mode }); return; }
+    el.scrollIntoView({ behavior: mode, block: "start", inline: "nearest" });
+    el.classList?.add("focus-pulse");
+    window.setTimeout(() => el.classList?.remove("focus-pulse"), 900);
+  }
+
+  function setView(id, options = {}) {
     $$(".view").forEach(v => v.classList.toggle("active", v.id === id));
     $$(".nav-item").forEach(b => b.classList.toggle("active", b.dataset.view === id));
     const names = { dashboard:"Dashboard", session:"Sesi Belajar", create:"Tambah Materi", library:"Library", review:"Review", teach:"Teaching Mode", analytics:"Analytics", settings:"Settings" };
@@ -152,29 +181,47 @@
     const pageTitle = $("#pageTitle"); if (pageTitle) pageTitle.textContent = title;
     const mobileTitle = $("#mobilePageTitle"); if (mobileTitle) mobileTitle.textContent = title;
     closeDrawer();
-    window.scrollTo({ top: 0, behavior: "smooth" });
     if (id === "review") renderReview();
     if (id === "library") renderLibrary();
     if (id === "teach") renderTeachOptions();
     if (id === "session") { renderSessionOptions(); renderSession(); }
     if (id === "analytics") renderAnalytics();
+    requestAnimationFrame(() => scrollToTarget(options.target || `#${id}`, options.behavior || "smooth"));
   }
 
   function renderSync() {
     const badge = $("#syncBadge"), text = $("#syncText"), auth = $("#authStatus");
     if (isCloud()) {
-      badge.textContent = "Cloud"; badge.className = "badge cloud";
-      text.textContent = `Supabase aktif. Login: ${state.user.email}`;
-      if (auth) auth.textContent = `Login sebagai ${state.user.email}`;
+      if (badge) { badge.textContent = "Cloud"; badge.className = "badge cloud"; }
+      if (text) text.textContent = `Cloud aktif. Login sebagai ${state.user.email}.`;
+      if (auth) auth.textContent = `Login sebagai ${state.user.email}. Data otomatis tersinkron.`;
     } else if (state.supa) {
-      badge.textContent = "Supabase"; badge.className = "badge local";
-      text.textContent = "Supabase tersambung, tapi belum login. Data masih lokal.";
-      if (auth) auth.textContent = "Supabase tersambung. Silakan login/sign up.";
+      if (badge) { badge.textContent = "Login"; badge.className = "badge local"; }
+      if (text) text.textContent = "Cloud siap. Login dari tombol profil di kanan atas.";
+      if (auth) auth.textContent = "Cloud siap. Silakan login untuk sinkron otomatis.";
     } else {
-      badge.textContent = "Local"; badge.className = "badge local";
-      text.textContent = "Data masih tersimpan lokal. Aktifkan Supabase untuk cloud database.";
-      if (auth) auth.textContent = "Belum login.";
+      if (badge) { badge.textContent = "Local"; badge.className = "badge local"; }
+      if (text) text.textContent = "Data tersimpan lokal. Cloud belum dikonfigurasi di server.";
+      if (auth) auth.textContent = "Cloud belum aktif di server. Aplikasi tetap bisa dipakai lokal.";
     }
+  }
+
+  function renderProfile() {
+    const email = state.user?.email || "";
+    const initial = email ? email[0].toUpperCase() : "?";
+    const label = email ? (email.split("@")[0] || "Profil") : "Login";
+    const setText = (id, value) => { const el = $(id); if (el) el.textContent = value; };
+    setText("#profileInitial", initial);
+    setText("#profileLabel", label);
+    setText("#profileAvatarLarge", initial === "?" ? "A" : initial);
+    setText("#profileEmail", email || "Belum login");
+
+    const loginArea = $("#profileLoginArea"), loggedArea = $("#profileLoggedArea"), hint = $("#cloudSetupHint");
+    if (loginArea) loginArea.hidden = isCloud() || !state.supa;
+    if (loggedArea) loggedArea.hidden = !isCloud();
+    if (hint) hint.hidden = !!state.supa;
+    const status = $("#profileCloudStatus");
+    if (status) status.textContent = isCloud() ? "Cloud aktif. Data tersimpan ke Supabase dan otomatis sync antar-device." : state.supa ? "Cloud siap. Login untuk sinkron." : "Cloud belum aktif di server.";
   }
 
   function dueCards() { return state.flashcards.filter(c => new Date(cardDue(c)) <= new Date()).sort((a,b) => new Date(cardDue(a)) - new Date(cardDue(b))); }
@@ -212,14 +259,14 @@
       $("#todayBadge").textContent = "Aman"; box.className = "stack";
       const latest = state.materials[0];
       box.innerHTML = `<div class="daily-command"><b>Tidak ada review mendesak.</b><p class="muted">Gunakan waktu ini untuk sesi belajar terarah atau teaching mode pada materi terbaru.</p><div class="action-row wrap"><button class="primary" id="dashStartSession">Mulai Sesi Belajar</button><button class="ghost" id="dashTeach">Teaching Mode</button></div></div>`;
-      $("#dashStartSession")?.addEventListener("click", () => { if (latest) state.currentSession = { materialId: latest.id, step: 0, recall: {} }; setView("session"); });
-      $("#dashTeach")?.addEventListener("click", () => setView("teach"));
+      $("#dashStartSession")?.addEventListener("click", () => { if (latest) state.currentSession = { materialId: latest.id, step: 0, recall: {} }; setView("session", { target: "#sessionBox" }); });
+      $("#dashTeach")?.addEventListener("click", () => setView("teach", { target: "#teach" }));
     } else {
       $("#todayBadge").textContent = `${due.length} kartu due`; box.className = "stack";
       const cmd = document.createElement("div"); cmd.className = "daily-command";
       cmd.innerHTML = `<b>${due.length} kartu perlu diulang hari ini.</b><p class="muted">Selesaikan review dulu sebelum tambah materi baru. Fokus utama: kartu dengan retensi rendah.</p><button class="primary" id="dashReview">Mulai Review Hari Ini</button>`;
       box.appendChild(cmd);
-      $("#dashReview", cmd).onclick = () => setView("review");
+      $("#dashReview", cmd).onclick = () => setView("review", { target: "#reviewBox" });
       due.slice(0, 5).forEach(c => {
         const m = findMaterial(c.material_id || c.materialId);
         const div = document.createElement("div"); div.className = "flash-mini priority";
@@ -256,7 +303,8 @@
     el.querySelector("h4").textContent = materialTitle(m);
     el.querySelector("p").textContent = `${materialCards(m.id).length} flashcard • ${materialQuizzes(m.id).length} quiz • ${shortDate(materialDate(m))} • ${(m.summary_short || m.summaryShort || "").slice(0, 110)}`;
     el.querySelector(".open").onclick = () => showDetail(m.id);
-    el.querySelector(".session-start")?.addEventListener("click", () => { state.currentSession = { materialId: m.id, step: 0, recall: {} }; setView("session"); });
+    el.querySelector(".session-start")?.addEventListener("click", () => { state.currentSession = { materialId: m.id, step: 0, recall: {} }; setView("session", { target: "#sessionBox" }); });
+    el.querySelector(".flash")?.addEventListener("click", () => startFlashcards(m.id));
     el.querySelector(".quiz").onclick = () => startQuiz(m.id, "practice");
     el.querySelector(".del").onclick = () => deleteMaterial(m.id);
     return el;
@@ -264,26 +312,107 @@
 
   function showDetail(id) {
     const m = findMaterial(id); if (!m) return;
-    const cards = materialCards(id), quizzes = materialQuizzes(id), concepts = m.concepts || [];
+    const cards = materialCards(id), quizzes = quizPool(id), concepts = m.concepts || [];
     const p = $("#detailPanel"); p.hidden = false;
     const sections = m.study_sections || m.studySections || splitIntoSections(m.summary_long || m.summaryLong || "");
+    const mastery = Math.round(Number(m.mastery_score || m.masteryScore || 0));
+    const dueCount = cards.filter(c => new Date(cardDue(c)) <= new Date()).length;
     p.innerHTML = `
-      <div class="panel-head detail-hero"><div><span class="badge soft">${esc(m.category || "Umum")}</span><h3>${esc(materialTitle(m))}</h3><p class="muted">${shortDate(materialDate(m))} • ${cards.length} flashcard • ${quizPool(id).length} quiz siap</p></div><div class="action-row wrap"><button class="primary small" id="startSessionFromDetail">Mulai sesi</button><button class="ghost small" id="startPretestFromDetail">Pre-test</button><button class="ghost small" id="startQuizFromDetail">Quiz</button><button class="ghost small" id="startPosttestFromDetail">Post-test</button><button class="ghost small" id="closeDetail">Tutup</button></div></div>
-      <div class="study-overview">
-        <div><span class="section-label">Ringkasan Cepat</span><p>${esc(m.summary_short || m.summaryShort || "Belum ada ringkasan pendek.")}</p></div>
-        ${renderTakeaways(m.key_takeaways || m.keyTakeaways || [])}
+      <div class="detail-v7">
+        <div class="detail-hero v7-hero">
+          <div>
+            <span class="badge soft">${esc(m.category || "Umum")}</span>
+            <h3>${esc(materialTitle(m))}</h3>
+            <p class="muted">${shortDate(materialDate(m))} • ${cards.length} flashcard • ${quizzes.length} quiz • ${dueCount} due review</p>
+          </div>
+          <button class="ghost small close-detail" id="closeDetail" aria-label="Tutup detail">×</button>
+        </div>
+
+        <div class="learning-path-card">
+          <div class="path-head">
+            <span class="section-label">Jalur Belajar Disarankan</span>
+            <b>Ikuti urutan ini biar tidak bingung.</b>
+            <p class="muted">Aiyone bukan cuma tempat baca materi. Kamu diarahkan dari cek awal sampai bukti penguasaan.</p>
+          </div>
+          <div class="journey-steps compact">
+            <button class="journey-step" id="startPretestFromDetail"><span>1</span><b>Pre-test</b><small>Cek awal tanpa lihat materi</small></button>
+            <button class="journey-step primary-step" id="startSessionFromDetail"><span>2</span><b>Belajar</b><small>Baca bagian kecil + active recall</small></button>
+            <button class="journey-step" id="startFlashFromDetail"><span>3</span><b>Flashcard</b><small>Ingat dulu, baru buka jawaban</small></button>
+            <button class="journey-step" id="startQuizFromDetail"><span>4</span><b>Quiz</b><small>Latihan pemahaman</small></button>
+            <button class="journey-step" id="startPosttestFromDetail"><span>5</span><b>Post-test</b><small>Target mastery ${Number(state.settings.masteryThreshold || 70)}%</small></button>
+          </div>
+        </div>
+
+        <div class="material-status-grid">
+          <article><span>Mastery</span><b>${mastery}%</b></article>
+          <article><span>Bagian belajar</span><b>${Math.max(sections.length, 1)}</b></article>
+          <article><span>Flashcard</span><b>${cards.length}</b></article>
+          <article><span>Due</span><b>${dueCount}</b></article>
+        </div>
+
+        <div class="detail-tabs" role="tablist">
+          <button class="detail-tab active" data-tab="summary">Ringkasan</button>
+          <button class="detail-tab" data-tab="sections">Modul</button>
+          <button class="detail-tab" data-tab="concepts">Konsep</button>
+          <button class="detail-tab" data-tab="flashcards">Flashcard</button>
+          <button class="detail-tab" data-tab="quiz">Quiz</button>
+        </div>
+
+        <section class="detail-tab-panel active" data-panel="summary">
+          <div class="study-overview">
+            <div><span class="section-label">Ringkasan Cepat</span><p>${esc(m.summary_short || m.summaryShort || "Belum ada ringkasan pendek.")}</p></div>
+            ${renderTakeaways(m.key_takeaways || m.keyTakeaways || [])}
+          </div>
+          <div class="prose-block summary-long">${htmlParagraphs(m.summary_long || m.summaryLong || "")}</div>
+        </section>
+
+        <section class="detail-tab-panel" data-panel="sections">
+          <div class="section-intro"><h4>Materi Dipelajari Bertahap</h4><p class="muted">Baca satu bagian, jawab active recall, baru lanjut. Jangan langsung scroll habis.</p></div>
+          ${renderStudySections(sections, m.summary_long || m.summaryLong || "-")}
+        </section>
+
+        <section class="detail-tab-panel" data-panel="concepts">
+          <div class="section-intro"><h4>Konsep Inti</h4><p class="muted">Pakai bagian ini untuk melihat definisi, contoh, dan miskonsepsi utama.</p></div>
+          <div class="concept-grid">${concepts.map(c => `<div class="concept-mini"><b>${esc(c.name)}</b><p>${esc(c.definition || "")}</p>${c.example ? `<small><b>Contoh:</b> ${esc(c.example)}</small>` : ""}<small class="muted"><b>Miskonsepsi:</b> ${esc(c.common_misconception || c.commonMisconception || "-")}</small></div>`).join("") || "<p class='muted'>Belum ada konsep.</p>"}</div>
+        </section>
+
+        <section class="detail-tab-panel" data-panel="flashcards">
+          <div class="flashcard-guide-card">
+            <div><h4>Flashcard itu bukan dibaca semuanya.</h4><p class="muted">Mode yang benar: lihat pertanyaan → jawab di kepala → buka jawaban → beri rating. Rating ini menentukan jadwal review berikutnya.</p></div>
+            <button class="primary" id="startFlashFromTab">Mulai Latihan Flashcard</button>
+          </div>
+          <div class="stack">${cards.slice(0,10).map((c, i) => `<div class="flash-preview"><span>${i+1}</span><div><b>${esc(c.front)}</b><p class="muted">Jawaban disembunyikan di mode latihan supaya kamu benar-benar mengingat.</p><small>Due: ${shortDate(cardDue(c))} • ${esc(c.difficulty || "medium")}</small></div></div>`).join("") || "<p class='muted'>Belum ada flashcard.</p>"}</div>
+        </section>
+
+        <section class="detail-tab-panel" data-panel="quiz">
+          <div class="section-intro"><h4>Quiz Bertingkat</h4><p class="muted">Pre-test untuk diagnosis, quiz untuk latihan, post-test untuk bukti mastery.</p></div>
+          <div class="quiz-mode-grid">
+            <button class="quiz-mode-card" id="startPretestFromTab"><b>Pre-test</b><span>Kerjakan sebelum belajar. Tidak masalah jika salah.</span></button>
+            <button class="quiz-mode-card" id="startQuizFromTab"><b>Practice Quiz</b><span>Latihan setelah membaca modul dan flashcard.</span></button>
+            <button class="quiz-mode-card" id="startPosttestFromTab"><b>Post-test</b><span>Target mastery ${Number(state.settings.masteryThreshold || 70)}%.</span></button>
+          </div>
+          <div class="stack quiz-preview-list">${quizzes.slice(0,8).map(q => `<div class="flash-mini"><b>[${esc(q.level || "understanding")}] ${esc(q.question)}</b><p class="muted">${esc(q.explanation || "")}</p></div>`).join("") || "<p class='muted'>Belum ada quiz.</p>"}</div>
+        </section>
       </div>
-      <div class="detail-section"><h4>Materi Dipelajari Bertahap</h4>${renderStudySections(sections, m.summary_long || m.summaryLong || "-")}</div>
-      <div class="detail-section"><h4>Konsep Inti</h4><div class="concept-grid">${concepts.map(c => `<div class="concept-mini"><b>${esc(c.name)}</b><p>${esc(c.definition || "")}</p>${c.example ? `<small><b>Contoh:</b> ${esc(c.example)}</small>` : ""}<small class="muted"><b>Miskonsepsi:</b> ${esc(c.common_misconception || c.commonMisconception || "-")}</small></div>`).join("") || "<p class='muted'>Belum ada konsep.</p>"}</div></div>
-      <div class="detail-section"><h4>Flashcard</h4><div class="stack">${cards.slice(0,16).map(c => `<div class="flash-mini"><b>${esc(c.front)}</b><p>${esc(c.back)}</p><small class="muted">Due: ${shortDate(cardDue(c))} • ${esc(c.difficulty || "medium")}</small></div>`).join("") || "<p class='muted'>Belum ada flashcard.</p>"}</div></div>
-      <div class="detail-section"><h4>Quiz Bertingkat</h4><p class="muted">Klik tombol Quiz di kartu materi untuk latihan interaktif. Di bawah ini daftar soal yang disiapkan.</p><div class="stack">${quizPool(id).slice(0,12).map(q => `<div class="flash-mini"><b>[${esc(q.level || "understanding")}] ${esc(q.question)}</b><p class="muted">${esc(q.explanation || "")}</p></div>`).join("") || "<p class='muted'>Belum ada quiz.</p>"}</div></div>
     `;
     $("#closeDetail").onclick = () => { p.hidden = true; };
-    $("#startSessionFromDetail")?.addEventListener("click", () => { state.currentSession = { materialId: id, step: 0, recall: {} }; setView("session"); });
+    $("#startSessionFromDetail")?.addEventListener("click", () => { state.currentSession = { materialId: id, step: 0, recall: {} }; setView("session", { target: "#sessionBox" }); });
     $("#startPretestFromDetail")?.addEventListener("click", () => startQuiz(id, "pretest"));
+    $("#startFlashFromDetail")?.addEventListener("click", () => startFlashcards(id));
     $("#startQuizFromDetail")?.addEventListener("click", () => startQuiz(id, "practice"));
     $("#startPosttestFromDetail")?.addEventListener("click", () => startQuiz(id, "posttest"));
-    setView("library");
+    $("#startFlashFromTab")?.addEventListener("click", () => startFlashcards(id));
+    $("#startPretestFromTab")?.addEventListener("click", () => startQuiz(id, "pretest"));
+    $("#startQuizFromTab")?.addEventListener("click", () => startQuiz(id, "practice"));
+    $("#startPosttestFromTab")?.addEventListener("click", () => startQuiz(id, "posttest"));
+    $$(".detail-tab", p).forEach(btn => btn.onclick = () => switchDetailTab(p, btn.dataset.tab));
+    setView("library", { target: "#detailPanel" });
+  }
+
+  function switchDetailTab(root, tab) {
+    $$(".detail-tab", root).forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+    $$(".detail-tab-panel", root).forEach(panel => panel.classList.toggle("active", panel.dataset.panel === tab));
+    requestAnimationFrame(() => scrollToTarget(root));
   }
 
   function renderTakeaways(items = []) {
@@ -330,7 +459,7 @@
       $("#textInput").value = ""; $("#titleInput").value = ""; $("#categoryInput").value = "";
       await refreshAll();
       state.currentSession = { materialId, step: 0, recall: {} };
-      setView("session");
+      setView("session", { target: "#sessionBox" });
     } catch (err) {
       setStatus(`Gagal generate AI: ${err.message}\n\nSolusi cepat: cek .env / Vercel Environment Variables, coba model lain, atau simpan tanpa AI.`);
     }
@@ -467,7 +596,7 @@
     const text = $("#textInput").value.trim();
     if (!text) return alert("Isi teks materi dulu.");
     const materialId = await saveLearningPack(text, $("#titleInput").value.trim(), $("#categoryInput").value.trim(), { title: $("#titleInput").value.trim() || "Materi Manual", category: $("#categoryInput").value.trim() || "Umum", summaryShort: text.slice(0, 180), concepts: [], flashcards: [], quizzes: [] });
-    await refreshAll(); state.currentSession = { materialId, step: 0, recall: {} }; setView("session");
+    await refreshAll(); state.currentSession = { materialId, step: 0, recall: {} }; setView("session", { target: "#sessionBox" });
   }
 
   async function callAI(type, payload) {
@@ -489,17 +618,45 @@
   function renderReview() {
     const cards = dueCards();
     const box = $("#reviewBox"); box.innerHTML = "";
-    if (!cards.length) { box.className = "review empty"; box.textContent = state.flashcards.length ? "Tidak ada kartu due sekarang." : "Belum ada flashcard."; return; }
-    box.className = "review";
+    if (!cards.length) {
+      box.className = "review empty review-empty-v7";
+      box.innerHTML = state.flashcards.length
+        ? `<h3>Tidak ada review mendesak.</h3><p>Semua kartu masih aman. Kamu bisa lanjut belajar materi baru atau latihan flashcard manual dari Library.</p>`
+        : `<h3>Belum ada flashcard.</h3><p>Upload materi dulu, lalu Aiyone akan membuat kartu review untukmu.</p>`;
+      return;
+    }
+    box.className = "review review-v7";
     state.currentReview = clamp(state.currentReview, 0, cards.length - 1);
     state.reviewStartedAt = Date.now();
     const c = cards[state.currentReview], m = findMaterial(c.material_id || c.materialId);
     const ret = Math.round(cardRetention(c) * 100);
-    const div = document.createElement("div"); div.className = "review-card";
-    div.innerHTML = `<span class="badge soft">${esc(materialTitle(m || {}))}</span><div class="review-question">${esc(c.front)}</div><button class="ghost" id="showAns">Tampilkan jawaban</button><div class="review-answer" id="answerBox" hidden>${esc(c.back)}</div><div class="psychometric-row" id="reviewMeta" hidden><label>Confidence <select id="confidenceSelect"><option value="1">1 — nebak</option><option value="2">2 — ragu</option><option value="3" selected>3 — cukup yakin</option><option value="4">4 — yakin</option><option value="5">5 — sangat yakin</option></select></label><p class="muted">Aiyone memakai confidence + waktu jawab untuk menyesuaikan jadwal review berikutnya.</p></div><div class="action-row wrap" id="rateBtns" hidden><button class="danger" data-rate="again">Lupa</button><button class="ghost" data-rate="hard">Sulit</button><button class="primary" data-rate="good">Paham</button><button class="primary" data-rate="easy">Mudah</button></div><p class="muted">${state.currentReview+1} dari ${cards.length} • prediksi retensi ±${ret}% • stability ${Number(c.stability || c.interval_days || 1).toFixed(1)} hari</p>`;
+    const div = document.createElement("div"); div.className = "review-card review-card-v7";
+    div.innerHTML = `
+      <div class="mode-brief review-brief">
+        <span class="badge soft">Review aktif</span>
+        <h3>Ingat dulu, jangan langsung buka jawaban.</h3>
+        <p>Jawab pertanyaan ini di kepala atau ucapkan pelan. Setelah yakin, buka jawaban dan pilih rating yang paling jujur.</p>
+      </div>
+      <div class="review-meta-line"><span>${state.currentReview+1}/${cards.length}</span><span>Retensi ±${ret}%</span><span>Stability ${Number(c.stability || c.interval_days || 1).toFixed(1)} hari</span></div>
+      <span class="badge soft material-pill">${esc(materialTitle(m || {}))}</span>
+      <div class="review-question">${esc(c.front)}</div>
+      <button class="primary reveal-answer" id="showAns">Saya sudah menjawab, tampilkan jawaban</button>
+      <div class="review-answer" id="answerBox" hidden>${esc(c.back)}</div>
+      <div class="psychometric-row" id="reviewMeta" hidden>
+        <label>Seberapa yakin?
+          <select id="confidenceSelect"><option value="1">1 — nebak</option><option value="2">2 — ragu</option><option value="3" selected>3 — cukup yakin</option><option value="4">4 — yakin</option><option value="5">5 — sangat yakin</option></select>
+        </label>
+        <p class="muted">Aiyone memakai confidence + waktu jawab untuk menyesuaikan jadwal review berikutnya.</p>
+      </div>
+      <div class="rating-grid" id="rateBtns" hidden>
+        <button class="danger" data-rate="again"><b>Lupa</b><span>muncul lagi segera</span></button>
+        <button class="ghost" data-rate="hard"><b>Sulit</b><span>ulang lebih cepat</span></button>
+        <button class="primary" data-rate="good"><b>Paham</b><span>jadwal normal</span></button>
+        <button class="primary" data-rate="easy"><b>Mudah</b><span>jarak review lebih jauh</span></button>
+      </div>`;
     box.appendChild(div);
-    $("#showAns").onclick = () => { $("#answerBox").hidden = false; $("#rateBtns").hidden = false; $("#reviewMeta").hidden = false; };
-    $$("[data-rate]", div).forEach(btn => btn.onclick = () => {
+    $("#showAns").onclick = () => { $("#answerBox").hidden = false; $("#rateBtns").hidden = false; $("#reviewMeta").hidden = false; scrollToTarget("#answerBox"); };
+    $$('[data-rate]', div).forEach(btn => btn.onclick = () => {
       const meta = {
         confidence: Number($("#confidenceSelect")?.value || 3),
         responseSeconds: Math.max(1, Math.round((Date.now() - state.reviewStartedAt) / 1000)),
@@ -520,7 +677,7 @@
     }
     await updateSmartStreak(rating);
     state.currentReview += 1;
-    await refreshAll(); setView("review");
+    await refreshAll(); setView("review", { target: "#reviewBox" });
   }
 
   async function insertReviewLog(log) {
@@ -604,21 +761,33 @@
     return "Quiz latihan";
   }
 
+  function quizInstruction(mode) {
+    if (mode === "pretest") return { title: "Tujuan sesi", text: "Jawab tanpa melihat materi. Ini cuma diagnosis awal, jadi salah itu wajar." };
+    if (mode === "posttest") return { title: "Tujuan sesi", text: `Buktikan penguasaan materi. Target mastery: ${Number(state.settings.masteryThreshold || 70)}%.` };
+    return { title: "Cara mengerjakan", text: "Pilih jawaban terbaik. Setelah salah, Aiyone akan mendorong konsep terkait masuk review." };
+  }
+
   function showQuiz() {
     const qstate = state.currentQuiz; if (!qstate) return;
     const q = qstate.quizzes[qstate.index];
     const modal = $("#quizModal");
     const p = $("#quizModalCard");
     if (modal) { modal.classList.add("open"); modal.setAttribute("aria-hidden", "false"); }
-    const progress = Math.round((qstate.index) / qstate.quizzes.length * 100);
+    const progress = Math.round(((qstate.index + 1) / qstate.quizzes.length) * 100);
+    const info = quizInstruction(qstate.mode);
     p.innerHTML = `
-      <div class="quiz-shell">
-        <div class="panel-head"><div><span class="badge soft">${esc(quizModeLabel(qstate.mode))}</span><h3>Quiz ${qstate.index + 1}/${qstate.quizzes.length}</h3><p class="muted">Level: ${esc(q.level || "understanding")} • target mastery ${Number(state.settings.masteryThreshold || 70)}%.</p></div><button class="ghost small" id="closeQuiz">Tutup</button></div>
-        <div class="quiz-progress"><i style="width:${progress}%"></i></div>
+      <div class="quiz-shell quiz-v7-shell">
+        <div class="quiz-topline">
+          <div><span class="badge soft">${esc(quizModeLabel(qstate.mode))}</span><h3>Soal ${qstate.index + 1} dari ${qstate.quizzes.length}</h3></div>
+          <button class="ghost small quiz-close" id="closeQuiz" aria-label="Tutup quiz">×</button>
+        </div>
+        <div class="mode-brief quiz-brief"><b>${esc(info.title)}</b><p>${esc(info.text)}</p></div>
+        <div class="quiz-progress-wrap"><div class="quiz-progress"><i style="width:${progress}%"></i></div><span>${progress}%</span></div>
+        <p class="muted quiz-level">Level: ${esc(q.level || "understanding")}</p>
         <h4 class="quiz-question">${esc(q.question)}</h4>
         <div id="quizOptions" class="quiz-options">${q.options.map((o,i) => `<button class="quiz-option" data-i="${i}"><span>${String.fromCharCode(65+i)}</span><b>${esc(o)}</b></button>`).join("")}</div>
         <div id="quizExplain" class="quiz-feedback" hidden></div>
-        <div class="action-row wrap quiz-actions"><button class="primary" id="quizNext" hidden>${qstate.index + 1 >= qstate.quizzes.length ? "Selesai" : "Lanjut"}</button></div>
+        <div class="action-row wrap quiz-actions"><button class="primary" id="quizNext" hidden>${qstate.index + 1 >= qstate.quizzes.length ? "Lihat hasil" : "Lanjut ke soal berikutnya"}</button></div>
       </div>`;
     $("#closeQuiz", p).onclick = () => closeQuizModal();
     $$(".quiz-option", p).forEach(btn => btn.onclick = () => answerQuiz(btn, q, qstate, p));
@@ -647,13 +816,14 @@
         await applyQuizResults(qstate.materialId, score, qstate.mistakes, qstate.mode, qstate.startedAt);
         await updateSmartStreak(score);
         const mistakesHtml = qstate.mistakes.length ? `<div class="mistake-list"><h4>Soal yang perlu diulang</h4>${qstate.mistakes.map((x, i) => `<div class="flash-mini"><b>${i+1}. ${esc(x.question)}</b><p><b>Jawaban benar:</b> ${esc(x.correct)}</p><p class="muted">${esc(x.explanation || "Cek konsep terkait dari materi.")}</p></div>`).join("")}</div>` : `<p class="muted">Tidak ada soal salah. Coba teaching mode untuk memastikan kamu bisa menjelaskan ulang.</p>`;
-        panel.innerHTML = `<div class="quiz-result"><span class="badge ${score >= 70 ? "cloud" : "local"}">${score >= 70 ? "Lulus mastery" : "Perlu review"}</span><h3>Quiz selesai</h3><p>Skor kamu: <b>${score}%</b> (${qstate.correct}/${qstate.quizzes.length} benar)</p><p class="muted">Smart streak naik kalau skor minimal ${Number(state.settings.masteryThreshold || 70)}% dan hari ini belum naik. Pre-test dipakai sebagai diagnosis, post-test sebagai bukti mastery.</p>${mistakesHtml}<div class="action-row wrap"><button class="primary" id="retryWrong">Ulangi konsep salah</button><button class="ghost" id="goTeachAfterQuiz">Teaching Mode</button><button class="ghost" id="backLibrary">Kembali ke Library</button></div></div>`;
+        panel.innerHTML = `<div class="quiz-result quiz-result-v7"><span class="badge ${score >= Number(state.settings.masteryThreshold || 70) ? "cloud" : "local"}">${score >= Number(state.settings.masteryThreshold || 70) ? "Lulus mastery" : "Perlu review"}</span><h3>Hasil ${esc(quizModeLabel(qstate.mode))}</h3><div class="score-hero"><strong>${score}%</strong><span>${qstate.correct}/${qstate.quizzes.length} benar</span></div><p class="muted">${qstate.mode === "pretest" ? "Ini baru diagnosis awal. Lanjutkan ke modul belajar bertahap." : qstate.mode === "posttest" ? "Post-test dipakai sebagai bukti mastery. Kalau belum lulus, ulangi flashcard dan konsep salah." : "Quiz latihan selesai. Konsep yang salah akan diprioritaskan untuk review."}</p>${mistakesHtml}<div class="action-row wrap"><button class="primary" id="retryWrong">Latihan konsep salah</button><button class="ghost" id="goFlashAfterQuiz">Flashcard</button><button class="ghost" id="goTeachAfterQuiz">Teaching Mode</button><button class="ghost" id="backLibrary">Kembali</button></div></div>`;
         const doneMaterialId = qstate.materialId;
         state.currentQuiz = null;
         await refreshAll();
-        $("#retryWrong", panel).onclick = () => startQuiz(doneMaterialId);
-        $("#goTeachAfterQuiz", panel).onclick = () => { closeQuizModal(); setView("teach"); };
-        $("#backLibrary", panel).onclick = () => { closeQuizModal(); setView("library"); };
+        $("#retryWrong", panel).onclick = () => startQuiz(doneMaterialId, "practice");
+        $("#goFlashAfterQuiz", panel).onclick = () => { closeQuizModal(); startFlashcards(doneMaterialId); };
+        $("#goTeachAfterQuiz", panel).onclick = () => { closeQuizModal(); setView("teach", { target: "#teach" }); };
+        $("#backLibrary", panel).onclick = () => { closeQuizModal(); setView("session", { target: "#sessionBox" }); };
       } else showQuiz();
     };
   }
@@ -675,6 +845,85 @@
       await put("materials", updatedMaterial);
       await put("review_logs", log);
       for (const c of cardsToNudge) await put("flashcards", { ...c, due_at: dueSoon, updated_at: now() });
+    }
+  }
+
+
+  function startFlashcards(materialId, cardsList = null) {
+    const cards = (cardsList && cardsList.length ? cardsList : materialCards(materialId)).filter(c => c.front && c.back);
+    if (!cards.length) return alert("Belum ada flashcard untuk materi ini.");
+    state.currentFlash = { materialId, cards: shuffle(cards), index: 0, shown: false, startedAt: Date.now(), done: 0 };
+    showFlashcard();
+  }
+
+  function showFlashcard() {
+    const f = state.currentFlash; if (!f) return;
+    const modal = $("#quizModal"), p = $("#quizModalCard");
+    if (modal) { modal.classList.add("open"); modal.setAttribute("aria-hidden", "false"); }
+    const card = f.cards[f.index];
+    const m = findMaterial(card.material_id || card.materialId || f.materialId);
+    const progress = Math.round(((f.index + 1) / f.cards.length) * 100);
+    f.startedAt = Date.now();
+    p.innerHTML = `
+      <div class="flash-shell flash-v7-shell">
+        <div class="quiz-topline">
+          <div><span class="badge soft">Flashcard aktif</span><h3>Kartu ${f.index + 1} dari ${f.cards.length}</h3></div>
+          <button class="ghost small quiz-close" id="closeFlash" aria-label="Tutup flashcard">×</button>
+        </div>
+        <div class="mode-brief"><b>Cara pakai</b><p>Jangan baca jawaban dulu. Jawab di kepala, baru tekan tombol tampilkan jawaban. Inilah active recall.</p></div>
+        <div class="quiz-progress-wrap"><div class="quiz-progress"><i style="width:${progress}%"></i></div><span>${progress}%</span></div>
+        <span class="badge soft material-pill">${esc(materialTitle(m || {}))}</span>
+        <div class="flash-question-card"><span>Pertanyaan</span><h4>${esc(card.front)}</h4></div>
+        <button class="primary reveal-answer" id="flashReveal">Saya sudah jawab, tampilkan jawaban</button>
+        <div class="review-answer flash-answer" id="flashAnswer" hidden>${esc(card.back)}</div>
+        <div class="psychometric-row" id="flashMeta" hidden>
+          <label>Seberapa yakin?
+            <select id="flashConfidence"><option value="1">1 — nebak</option><option value="2">2 — ragu</option><option value="3" selected>3 — cukup yakin</option><option value="4">4 — yakin</option><option value="5">5 — sangat yakin</option></select>
+          </label>
+          <p class="muted">Ratingmu akan menentukan kapan kartu ini muncul lagi.</p>
+        </div>
+        <div class="rating-grid" id="flashRateBtns" hidden>
+          <button class="danger" data-flash-rate="again"><b>Lupa</b><span>aku belum ingat</span></button>
+          <button class="ghost" data-flash-rate="hard"><b>Sulit</b><span>ingat tapi berat</span></button>
+          <button class="primary" data-flash-rate="good"><b>Paham</b><span>jawaban cukup benar</span></button>
+          <button class="primary" data-flash-rate="easy"><b>Mudah</b><span>langsung ingat</span></button>
+        </div>
+      </div>`;
+    $("#closeFlash", p).onclick = () => { state.currentFlash = null; closeQuizModal(); };
+    $("#flashReveal", p).onclick = () => { $("#flashAnswer", p).hidden = false; $("#flashMeta", p).hidden = false; $("#flashRateBtns", p).hidden = false; scrollToTarget($("#flashAnswer", p)); };
+    $$('[data-flash-rate]', p).forEach(btn => btn.onclick = () => rateFlashcard(card, btn.dataset.flashRate));
+  }
+
+  async function rateFlashcard(card, rating) {
+    const f = state.currentFlash; if (!f) return;
+    const meta = {
+      confidence: Number($("#flashConfidence")?.value || 3),
+      responseSeconds: Math.max(1, Math.round((Date.now() - f.startedAt) / 1000)),
+      retentionBefore: cardRetention(card)
+    };
+    const updated = scheduleCard(card, rating, meta);
+    const log = { id: uid("log"), user_id: state.user?.id || null, card_id: card.id, material_id: card.material_id || card.materialId || f.materialId, rating: `flash-${rating}`, correct: ["good","easy"].includes(rating), previous_due_at: cardDue(card), next_due_at: updated.due_at, response_seconds: meta.responseSeconds, confidence: meta.confidence, retention_before: meta.retentionBefore, created_at: now() };
+    if (isCloud()) {
+      const { error } = await state.supa.from("flashcards").update(updated).eq("id", card.id); if (error) throw new Error(error.message);
+      await insertReviewLog(log);
+    } else {
+      await put("flashcards", { ...card, ...updated }); await put("review_logs", log);
+    }
+    await updateSmartStreak(rating);
+    f.done += 1;
+    f.index += 1;
+    if (f.index >= f.cards.length) {
+      const materialId = f.materialId;
+      state.currentFlash = null;
+      const p = $("#quizModalCard");
+      p.innerHTML = `<div class="quiz-result quiz-result-v7"><span class="badge cloud">Flashcard selesai</span><h3>Latihan selesai</h3><div class="score-hero"><strong>${f.done}</strong><span>kartu sudah kamu review</span></div><p class="muted">Kartu yang sulit akan muncul lebih cepat. Lanjutkan dengan quiz atau post-test untuk cek mastery.</p><div class="action-row wrap"><button class="primary" id="flashToQuiz">Lanjut Quiz</button><button class="ghost" id="flashToPost">Post-test</button><button class="ghost" id="flashBackSession">Kembali Belajar</button></div></div>`;
+      await refreshAll();
+      $("#flashToQuiz", p).onclick = () => startQuiz(materialId, "practice");
+      $("#flashToPost", p).onclick = () => startQuiz(materialId, "posttest");
+      $("#flashBackSession", p).onclick = () => { closeQuizModal(); setView("session", { target: "#sessionBox" }); };
+    } else {
+      await refreshAll();
+      showFlashcard();
     }
   }
 
@@ -724,12 +973,10 @@
     $("#openrouterModel").value = state.settings.openrouterModel;
     if ($("#masteryThreshold")) $("#masteryThreshold").value = state.settings.masteryThreshold || 70;
     if ($("#targetRetention")) $("#targetRetention").value = state.settings.targetRetention || 0.85;
-    $("#supabaseUrl").value = state.settings.supabaseUrl;
-    $("#supabaseAnon").value = state.settings.supabaseAnon;
   }
 
   async function exportJSON() {
-    const data = { exportedAt: now(), settings: { ...state.settings, supabaseAnon: "" }, materials: state.materials, flashcards: state.flashcards, quizzes: state.quizzes, logs: state.logs, teaching: state.teaching };
+    const data = { exportedAt: now(), settings: { ...state.settings, supabaseAnon: "", supabaseUrl: "" }, materials: state.materials, flashcards: state.flashcards, quizzes: state.quizzes, logs: state.logs, teaching: state.teaching };
     const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
     const a = Object.assign(document.createElement("a"), { href: url, download: `aiyone-backup-${new Date().toISOString().slice(0,10)}.json` });
     a.click(); URL.revokeObjectURL(url);
@@ -767,7 +1014,7 @@
 
   function renderSession() {
     const box = $("#sessionBox"); if (!box) return;
-    if (!state.materials.length) { box.className = "session-box empty"; box.textContent = "Upload materi dulu untuk memakai sesi belajar."; return; }
+    if (!state.materials.length) { box.className = "session-box empty"; box.innerHTML = `<h3>Belum ada materi.</h3><p>Upload satu PDF/catatan dulu. Setelah itu Aiyone akan membuat jalur belajar otomatis.</p>`; return; }
     const select = $("#sessionMaterial");
     const materialId = state.currentSession?.materialId || select?.value || state.materials[0]?.id;
     const m = findMaterial(materialId) || state.materials[0];
@@ -778,36 +1025,48 @@
     state.currentSession.step = step;
     const sec = sections[step] || { title: materialTitle(m), explanation: m.summary_long || m.summary_short || "Belum ada materi bertahap.", example: "", activeRecall: "Jelaskan inti bagian ini dengan bahasamu." };
     const progress = sections.length ? Math.round(((step + 1) / sections.length) * 100) : 0;
-    box.className = "session-box";
+    const cards = materialCards(m.id);
+    const dueCount = cards.filter(c => new Date(cardDue(c)) <= new Date()).length;
+    box.className = "session-box session-v7";
     box.innerHTML = `
-      <div class="session-hero">
-        <div><span class="badge soft">Step ${step + 1}/${Math.max(sections.length, 1)}</span><h3>${esc(sec.title || `Bagian ${step + 1}`)}</h3><p class="muted">${esc(materialTitle(m))}</p></div>
+      <div class="learning-coach-card">
+        <span class="badge soft">Aiyone Coach</span>
+        <h3>Hari ini, ikuti urutan belajar ini.</h3>
+        <p>Jangan langsung loncat-loncat. Mulai dari diagnosis, pelajari bagian kecil, lalu uji dengan flashcard dan post-test.</p>
+      </div>
+      <div class="journey-steps">
+        <button class="journey-step" id="sessionPretest"><span>1</span><b>Pre-test</b><small>Cek awal</small></button>
+        <button class="journey-step primary-step" id="jumpRead"><span>2</span><b>Baca modul</b><small>Step ${step + 1}/${Math.max(sections.length, 1)}</small></button>
+        <button class="journey-step" id="sessionFlash"><span>3</span><b>Flashcard</b><small>${cards.length} kartu • ${dueCount} due</small></button>
+        <button class="journey-step" id="sessionQuiz"><span>4</span><b>Quiz</b><small>Latihan</small></button>
+        <button class="journey-step" id="sessionPosttest"><span>5</span><b>Post-test</b><small>Mastery ${Number(state.settings.masteryThreshold || 70)}%</small></button>
+      </div>
+      <div class="session-hero" id="readStep">
+        <div><span class="badge soft">Bagian ${step + 1}/${Math.max(sections.length, 1)}</span><h3>${esc(sec.title || `Bagian ${step + 1}`)}</h3><p class="muted">${esc(materialTitle(m))}</p></div>
         <div class="session-progress"><div class="bar"><i style="width:${progress}%"></i></div><b>${progress}%</b></div>
       </div>
+      <div class="mode-brief"><b>Instruksi</b><p>Baca bagian ini pelan-pelan. Setelah itu tutup sebentar, lalu jawab active recall dengan bahasamu sendiri.</p></div>
       <div class="prose-block learning-copy">${htmlParagraphs(sec.explanation || sec.content || "-")}</div>
       ${sec.example ? `<div class="example"><b>Contoh:</b> ${esc(sec.example)}</div>` : ""}
       <div class="recall-box">
-        <label><b>Active recall</b><span>${esc(sec.activeRecall || sec.active_recall || "Coba jelaskan ulang bagian ini tanpa melihat catatan.")}</span><textarea id="sessionRecall" rows="4" placeholder="Tulis jawaban singkatmu di sini..."></textarea></label>
+        <label><b>Active recall</b><span>${esc(sec.activeRecall || sec.active_recall || "Coba jelaskan ulang bagian ini tanpa melihat catatan.")}</span><textarea id="sessionRecall" rows="4" placeholder="Tulis jawaban singkatmu. Tidak harus sempurna, yang penting otakmu bekerja..."></textarea></label>
       </div>
       <div class="action-row wrap session-actions">
-        <button class="ghost" id="prevStep" ${step <= 0 ? "disabled" : ""}>Sebelumnya</button>
-        <button class="primary" id="nextStep">${step + 1 >= sections.length ? "Selesai Baca" : "Saya paham, lanjut"}</button>
-        <button class="ghost" id="sessionPretest">Pre-test</button>
-        <button class="ghost" id="sessionFlash">Review Flashcard</button>
-        <button class="ghost" id="sessionQuiz">Quiz</button>
-        <button class="ghost" id="sessionPosttest">Post-test</button>
-        <button class="ghost" id="sessionTeach">Teaching Mode</button>
+        <button class="ghost" id="prevStep" ${step <= 0 ? "disabled" : ""}>← Sebelumnya</button>
+        <button class="primary" id="nextStep">${step + 1 >= sections.length ? "Selesai baca → latihan" : "Saya paham, lanjut →"}</button>
+        <button class="ghost" id="sessionTeach">Jelaskan ke AI</button>
       </div>`;
     const savedRecall = state.currentSession.recall?.[step] || "";
     $("#sessionRecall", box).value = savedRecall;
     $("#sessionRecall", box).oninput = e => { state.currentSession.recall[step] = e.target.value; };
-    $("#prevStep", box).onclick = () => { state.currentSession.step = Math.max(0, step - 1); renderSession(); };
-    $("#nextStep", box).onclick = () => { if (step + 1 >= sections.length) { startQuiz(m.id); } else { state.currentSession.step = step + 1; renderSession(); } };
+    $("#prevStep", box).onclick = () => { state.currentSession.step = Math.max(0, step - 1); renderSession(); scrollToTarget("#readStep"); };
+    $("#nextStep", box).onclick = () => { if (step + 1 >= sections.length) { startFlashcards(m.id); } else { state.currentSession.step = step + 1; renderSession(); scrollToTarget("#readStep"); } };
+    $("#jumpRead", box).onclick = () => scrollToTarget("#readStep");
     $("#sessionPretest", box).onclick = () => startQuiz(m.id, "pretest");
-    $("#sessionFlash", box).onclick = () => setView("review");
+    $("#sessionFlash", box).onclick = () => startFlashcards(m.id);
     $("#sessionQuiz", box).onclick = () => startQuiz(m.id, "practice");
     $("#sessionPosttest", box).onclick = () => startQuiz(m.id, "posttest");
-    $("#sessionTeach", box).onclick = () => { setView("teach"); $("#teachMaterial").value = m.id; };
+    $("#sessionTeach", box).onclick = () => { setView("teach", { target: "#teach" }); $("#teachMaterial").value = m.id; };
   }
 
   function renderAnalytics() {
@@ -847,13 +1106,14 @@
     }
   }
 
-  async function syncLocalToCloud() {
-    if (!isCloud()) return alert("Login Supabase dulu sampai status Cloud aktif.");
+  async function syncLocalToCloud(options = {}) {
+    const silent = !!options.silent;
+    if (!isCloud()) { if (!silent) alert("Login dulu sampai status Cloud aktif."); return false; }
     const [lm, lc, lq, ll, lt] = await Promise.all([getAll("materials"), getAll("flashcards"), getAll("quizzes"), getAll("review_logs"), getAll("teaching_sessions")]);
     const uidUser = state.user.id;
     const localMaterials = lm.filter(m => !m.user_id || m.user_id !== uidUser);
-    if (!localMaterials.length) return alert("Tidak ada materi lokal yang perlu dipindahkan.");
-    if (!confirm(`Pindahkan ${localMaterials.length} materi lokal ke Cloud? Data lokal tidak dihapus.`)) return;
+    if (!localMaterials.length) { if (!silent) alert("Tidak ada materi lokal yang perlu dipindahkan."); return true; }
+    if (!silent && !confirm(`Pindahkan ${localMaterials.length} materi lokal ke Cloud? Data lokal tidak dihapus.`)) return false;
     const ids = new Set(localMaterials.map(m => m.id));
     const materials = localMaterials.map(m => ({ ...m, user_id: uidUser, updated_at: now() }));
     const cards = lc.filter(c => ids.has(c.material_id || c.materialId)).map(c => ({ ...c, user_id: uidUser, material_id: c.material_id || c.materialId }));
@@ -867,9 +1127,26 @@
       await upsert("quizzes", quizzes);
       await upsert("review_logs", logs);
       await upsert("teaching_sessions", teaching);
+      // Tandai data lokal sebagai milik user ini agar tidak di-upsert berulang kali di setiap login.
+      for (const row of materials) await put("materials", row);
+      for (const row of cards) await put("flashcards", row);
+      for (const row of quizzes) await put("quizzes", row);
+      for (const row of logs) await put("review_logs", row);
+      for (const row of teaching) await put("teaching_sessions", row);
       await refreshAll();
-      alert("Data lokal berhasil dipindahkan ke Cloud.");
-    } catch (e) { alert(`Gagal sync: ${e.message}`); }
+      if (!silent) alert("Data lokal berhasil dipindahkan ke Cloud.");
+      return true;
+    } catch (e) { if (!silent) alert(`Gagal sync: ${e.message}`); else console.warn("Auto sync gagal", e); return false; }
+  }
+
+  function openProfile() {
+    renderProfile();
+    const modal = $("#profileModal");
+    if (modal) { modal.classList.add("open"); modal.setAttribute("aria-hidden", "false"); }
+  }
+  function closeProfile() {
+    const modal = $("#profileModal");
+    if (modal) { modal.classList.remove("open"); modal.setAttribute("aria-hidden", "true"); }
   }
 
   function openDrawer() {
@@ -882,6 +1159,7 @@
   }
   function closeQuizModal() {
     state.currentQuiz = null;
+    state.currentFlash = null;
     const modal = $("#quizModal");
     const card = $("#quizModalCard");
     if (modal) { modal.classList.remove("open"); modal.setAttribute("aria-hidden", "true"); }
@@ -892,7 +1170,10 @@
     $$(".nav-item").forEach(b => b.onclick = () => setView(b.dataset.view));
     $$("#menuToggle").forEach(b => b.onclick = openDrawer);
     $$("#drawerClose, #drawerOverlay").forEach(b => b.onclick = closeDrawer);
-    document.addEventListener("keydown", e => { if (e.key === "Escape") { closeDrawer(); closeQuizModal(); } });
+    document.addEventListener("keydown", e => { if (e.key === "Escape") { closeDrawer(); closeQuizModal(); closeProfile(); } });
+    ["#profileBtn", "#mobileProfileBtn"].forEach(sel => { const b = $(sel); if (b) b.onclick = openProfile; });
+    const profileModal = $("#profileModal"); if (profileModal) profileModal.addEventListener("click", e => { if (e.target === profileModal) closeProfile(); });
+    const profileClose = $("#profileClose"); if (profileClose) profileClose.onclick = closeProfile;
     $$('[data-jump]').forEach(b => b.onclick = () => setView(b.dataset.jump));
     $("#pdfInput").onchange = async (e) => {
       const file = e.target.files[0]; if (!file) return;
@@ -918,17 +1199,9 @@
       try { const r = await callAI("ping", { text: "Jawab singkat: AI server aktif." }); alert(`AI server aktif: ${r.message || JSON.stringify(r)}`); }
       catch (e) { alert(`AI server gagal: ${e.message}`); }
     };
-    $("#saveSupabaseBtn").onclick = async () => {
-      state.settings.supabaseUrl = normalizeSupabaseUrl($("#supabaseUrl").value);
-      state.settings.supabaseAnon = $("#supabaseAnon").value.trim();
-      await saveSettings();
-      await refreshAll();
-      alert("Koneksi Supabase tersimpan. Sekarang sign up/login.");
-    };
-    $("#clearSupabaseBtn").onclick = async () => { state.settings.supabaseUrl = ""; state.settings.supabaseAnon = ""; await saveSettings(); await refreshAll(); };
-    $("#signUpBtn").onclick = async () => authAction("signUp");
-    $("#loginBtn").onclick = async () => authAction("signInWithPassword");
-    $("#logoutBtn").onclick = async () => { if (state.supa) await state.supa.auth.signOut(); await refreshAll(); };
+    if ($("#signUpBtn")) $("#signUpBtn").onclick = async () => authAction("signUp");
+    if ($("#loginBtn")) $("#loginBtn").onclick = async () => authAction("signInWithPassword");
+    if ($("#logoutBtn")) $("#logoutBtn").onclick = async () => { if (state.supa) await state.supa.auth.signOut(); closeProfile(); await refreshAll(); };
     $("#exportBtn").onclick = exportJSON;
     $("#importInput").onchange = e => e.target.files[0] && importJSON(e.target.files[0]);
     $("#syncLocalBtn") && ($("#syncLocalBtn").onclick = syncLocalToCloud);
@@ -950,8 +1223,8 @@
   }
 
   async function authAction(kind) {
-    if (!state.supa) return alert("Isi Supabase URL dan anon key dulu.");
-    const email = $("#authEmail").value.trim(), password = $("#authPassword").value;
+    if (!state.supa) return alert("Cloud belum aktif di server. Isi SUPABASE_URL dan SUPABASE_ANON_KEY di Environment Variables Vercel sekali saja.");
+    const email = $("#authEmail")?.value.trim(), password = $("#authPassword")?.value;
     if (!email || !password) return alert("Isi email dan password dulu.");
 
     const { data, error } = await state.supa.auth[kind]({ email, password });
@@ -966,17 +1239,19 @@
     }
     state.user = user;
     await loadData();
+    if (state.user) await syncLocalToCloud({ silent: true });
     renderAll();
 
     if (kind === "signUp" && !state.user) {
       alert("Akun dibuat. Kalau email confirmation aktif, cek email dulu, lalu login lagi.");
     } else {
-      alert(kind === "signUp" ? "Akun dibuat dan login berhasil." : "Login berhasil. Status Cloud sudah aktif.");
+      alert(kind === "signUp" ? "Akun dibuat, login berhasil, dan data otomatis disinkronkan." : "Login berhasil. Data otomatis disinkronkan.");
+      closeProfile();
     }
   }
 
   async function boot() {
-    db = await openDB(); await loadSettings(); await initSupabase(); await loadData(); bindEvents(); renderAll();
+    db = await openDB(); await loadSettings(); await loadPublicConfig(); await initSupabase(); await loadData(); bindEvents(); renderAll();
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
   }
   boot().catch(err => { console.error(err); alert(`Aiyone gagal start: ${err.message}`); });

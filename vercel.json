@@ -2,13 +2,19 @@
   "functions": {
     "api/generate.js": {
       "maxDuration": 30
+    },
+    "api/config.js": {
+      "maxDuration": 10
     }
   },
   "headers": [
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "Cache-Control", "value": "no-store" }
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
       ]
     }
   ]

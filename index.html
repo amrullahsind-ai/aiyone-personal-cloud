@@ -4,9 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#5b4bff" />
-  <title>Aiyone Personal Cloud</title>
+  <title>Aiyone Personal v8</title>
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=aiyone-v8" />
 </head>
 <body>
   <div class="drawer-overlay" id="drawerOverlay" aria-hidden="true"></div>
@@ -16,6 +16,7 @@
       <span class="eyebrow">Aiyone</span>
       <strong id="mobilePageTitle">Dashboard</strong>
     </div>
+    <button class="icon-btn profile-icon" id="mobileProfileBtn" title="Profil">👤</button>
     <button class="icon-btn" id="mobileInstallBtn" hidden title="Install">⬇</button>
   </header>
 
@@ -52,6 +53,7 @@
           <h2 id="pageTitle">Dashboard</h2>
         </div>
         <div class="top-actions">
+          <button class="profile-pill" id="profileBtn" type="button"><span class="avatar-dot" id="profileInitial">?</span><span id="profileLabel">Login</span></button>
           <button class="ghost" id="installBtn" hidden>Install</button>
           <button class="primary" data-jump="create">+ Materi</button>
         </div>
@@ -246,33 +248,12 @@
           </article>
 
           <article class="panel">
-            <h3>Supabase Cloud Database</h3>
-            <p class="muted">Masukkan URL dan anon key Supabase. Setelah login, data tersimpan di PostgreSQL cloud dengan RLS.</p>
-            <label>Supabase URL<input id="supabaseUrl" placeholder="https://xxxx.supabase.co" /></label>
-            <label>Supabase Anon Key<input id="supabaseAnon" type="password" placeholder="eyJ..." /></label>
-            <div class="action-row wrap">
-              <button class="primary" id="saveSupabaseBtn">Simpan koneksi</button>
-              <button class="ghost" id="clearSupabaseBtn">Matikan cloud</button>
-            </div>
-            <hr />
-            <label>Email<input id="authEmail" type="email" placeholder="email kamu" /></label>
-            <label>Password<input id="authPassword" type="password" placeholder="min. 6 karakter" /></label>
-            <div class="action-row wrap">
-              <button class="primary" id="signUpBtn">Sign up</button>
-              <button class="ghost" id="loginBtn">Login</button>
-              <button class="ghost" id="logoutBtn">Logout</button>
-            </div>
-            <p id="authStatus" class="muted">Belum login.</p>
-          </article>
-
-          <article class="panel">
             <h3>Backup & Migrasi</h3>
             <p class="muted">Backup tetap disediakan supaya kamu tidak bergantung penuh pada browser/cloud.</p>
             <div class="action-row wrap">
               <button class="ghost" id="exportBtn">Export JSON</button>
               <label class="ghost import-label" for="importInput">Import JSON</label>
               <input id="importInput" type="file" accept="application/json" hidden />
-              <button class="ghost" id="syncLocalBtn">Pindahkan local → cloud</button>
               <button class="danger" id="resetBtn">Reset local data</button>
             </div>
           </article>
@@ -310,6 +291,48 @@
     </article>
   </template>
 
+
+  <div class="profile-modal" id="profileModal" aria-hidden="true">
+    <div class="profile-card" role="dialog" aria-modal="true" aria-labelledby="profileTitle">
+      <div class="profile-head">
+        <div>
+          <span class="eyebrow">Aiyone Account</span>
+          <h3 id="profileTitle">Profil & Sinkronisasi</h3>
+          <p id="authStatus" class="muted">Mengecek status akun...</p>
+        </div>
+        <button class="icon-btn" id="profileClose" aria-label="Tutup profil">×</button>
+      </div>
+
+      <div class="cloud-state" id="cloudSetupHint">
+        Cloud database dibaca otomatis dari server. Kalau belum aktif, isi Environment Variables di Vercel: <b>SUPABASE_URL</b> dan <b>SUPABASE_ANON_KEY</b>.
+      </div>
+
+      <div id="profileLoginArea" class="profile-login">
+        <label>Email<input id="authEmail" type="email" placeholder="email kamu" autocomplete="email" /></label>
+        <label>Password<input id="authPassword" type="password" placeholder="min. 6 karakter" autocomplete="current-password" /></label>
+        <div class="action-row wrap">
+          <button class="primary" id="loginBtn">Login</button>
+          <button class="ghost" id="signUpBtn">Buat akun</button>
+        </div>
+        <p class="muted small-note">Setelah login, Aiyone otomatis sync data lokal ke cloud.</p>
+      </div>
+
+      <div id="profileLoggedArea" class="profile-logged" hidden>
+        <div class="profile-summary">
+          <div class="avatar-large" id="profileAvatarLarge">A</div>
+          <div>
+            <b id="profileEmail">-</b>
+            <p class="muted" id="profileCloudStatus">Cloud aktif. Data tersinkron otomatis.</p>
+          </div>
+        </div>
+        <div class="action-row wrap">
+          <button class="ghost" id="syncLocalBtn">Sync ulang local → cloud</button>
+          <button class="danger" id="logoutBtn">Logout</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="quiz-modal" id="quizModal" aria-hidden="true">
     <div class="quiz-modal-card" id="quizModalCard"></div>
   </div>
@@ -323,6 +346,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-  <script src="app.js?v=psychopedagogy-v6"></script>
+  <script src="app.js?v=aiyone-v8"></script>
 </body>
 </html>
