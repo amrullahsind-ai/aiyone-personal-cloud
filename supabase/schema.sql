@@ -79,6 +79,10 @@ create table if not exists public.teaching_sessions (
   created_at timestamptz default now()
 );
 
+drop trigger if exists materials_updated_at on public.materials;
+drop trigger if exists flashcards_updated_at on public.flashcards;
+drop trigger if exists quizzes_updated_at on public.quizzes;
+
 create trigger materials_updated_at before update on public.materials
 for each row execute function public.set_updated_at();
 create trigger flashcards_updated_at before update on public.flashcards
@@ -113,3 +117,20 @@ for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 -- v3: ringkasan belajar bertahap. Aman dirun ulang.
 alter table public.materials
 add column if not exists study_sections jsonb default '[]'::jsonb;
+
+-- v6: psychopedagogy memory engine fields. Aman dirun ulang.
+alter table public.flashcards
+add column if not exists stability numeric default 1,
+add column if not exists memory_difficulty numeric default 5,
+add column if not exists last_confidence numeric,
+add column if not exists last_response_seconds numeric;
+
+alter table public.review_logs
+add column if not exists response_seconds numeric,
+add column if not exists confidence numeric,
+add column if not exists retention_before numeric,
+add column if not exists score numeric,
+add column if not exists quiz_mode text;
+
+
+notify pgrst, 'reload schema';
