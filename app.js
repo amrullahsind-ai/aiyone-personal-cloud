@@ -119,11 +119,12 @@
       const [materials, flashcards, quizzes, logs, teaching] = await Promise.all([
         getAll("materials"), getAll("flashcards"), getAll("quizzes"), getAll("review_logs"), getAll("teaching_sessions")
       ]);
-      state.materials = materials.sort(sortNewest);
-      state.flashcards = flashcards;
-      state.quizzes = quizzes;
-      state.logs = logs;
-      state.teaching = teaching;
+      state.materials = materials.filter(row => !row.user_id).sort(sortNewest);
+      const localMaterialIds = new Set(state.materials.map(row => row.id));
+      state.flashcards = flashcards.filter(row => !row.user_id && localMaterialIds.has(row.material_id || row.materialId));
+      state.quizzes = quizzes.filter(row => !row.user_id && localMaterialIds.has(row.material_id || row.materialId));
+      state.logs = logs.filter(row => !row.user_id && localMaterialIds.has(row.material_id || row.materialId));
+      state.teaching = teaching.filter(row => !row.user_id && localMaterialIds.has(row.material_id || row.materialId));
     }
   }
 
@@ -241,12 +242,105 @@
     return "strong";
   }
 
+  function conceptKey(value = "") {
+    return String(value).toLowerCase().trim().replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\s+/g, " ");
+  }
+
+  function cardsForConcept(materialId, conceptName) {
+    const key = conceptKey(conceptName);
+    return materialCards(materialId).filter(card => {
+      const cardConcept = conceptKey(card.concept || "");
+      const cardText = conceptKey(`${card.front || ""} ${card.back || ""}`);
+      return (cardConcept && (cardConcept === key || cardConcept.includes(key) || key.includes(cardConcept))) || (key && cardText.includes(key));
+    });
+  }
+
+  function conceptMastery(material, concept) {
+    const cards = cardsForConcept(material.id, concept.name);
+    const ids = new Set(cards.map(card => card.id));
+    const logs = state.logs.filter(log => log.card_id && ids.has(log.card_id));
+    const targetKey = conceptKey(concept.name);
+    const quizLogs = state.logs.filter(log => {
+      if (log.material_id !== material.id || !String(log.rating || "").startsWith("quiz-answer:")) return false;
+      const parts = String(log.rating).split(":");
+      try { return conceptKey(decodeURIComponent(parts[3] || "")) === targetKey; } catch (_) { return false; }
+    });
+    const teachingSessions = state.teaching.filter(session => {
+      if (session.material_id !== material.id) return false;
+      const focus = conceptKey(session.result?._focus || session.focus || "");
+      return focus && (focus === targetKey || focus.includes(targetKey) || targetKey.includes(focus));
+    });
+    const retention = cards.length ? cards.reduce((sum, card) => sum + cardRetention(card), 0) / cards.length : 0;
+    const accuracy = logs.length ? logs.filter(log => log.correct).length / logs.length : 0;
+    const repetitions = cards.reduce((sum, card) => sum + Number(card.repetitions || 0), 0);
+    const repetitionScore = Math.min(1, repetitions / Math.max(cards.length * 3, 1));
+    const hasFlashEvidence = logs.length > 0 || repetitions > 0;
+    if (!hasFlashEvidence && !quizLogs.length && !teachingSessions.length) return { score: 0, status: "new", label: "Belum diuji", cards, reviews: 0, quizAttempts: 0, teachingAttempts: 0 };
+    const modeWeight = { pretest: .35, practice: .7, posttest: 1 };
+    const quizWeightTotal = quizLogs.reduce((sum, log) => sum + (modeWeight[log.quiz_mode] || .5), 0);
+    const quizScore = quizWeightTotal ? quizLogs.reduce((sum, log) => sum + (log.correct ? (modeWeight[log.quiz_mode] || .5) : 0), 0) / quizWeightTotal : 0;
+    const teachingScore = teachingSessions.length ? teachingSessions.reduce((sum, session) => sum + Number(session.result?.masteryScore || session.result?.mastery_score || 0), 0) / teachingSessions.length / 100 : 0;
+    const evidence = [];
+    if (hasFlashEvidence) evidence.push({ score: retention * .55 + accuracy * .3 + repetitionScore * .15, weight: .5 });
+    if (quizLogs.length) evidence.push({ score: quizScore, weight: .3 });
+    if (teachingSessions.length) evidence.push({ score: teachingScore, weight: .2 });
+    const evidenceWeight = evidence.reduce((sum, item) => sum + item.weight, 0);
+    const score = Math.round(clamp(evidence.reduce((sum, item) => sum + item.score * item.weight, 0) / Math.max(evidenceWeight, .01), 0, 1) * 100);
+    const due = cards.some(card => new Date(cardDue(card)) <= new Date());
+    const posttestLogs = quizLogs.filter(log => log.quiz_mode === "posttest");
+    const posttestPassed = posttestLogs.length && (posttestLogs.filter(log => log.correct).length / posttestLogs.length) >= Number(state.settings.masteryThreshold || 70) / 100;
+    const status = due || score < 45 ? "weak" : score < Number(state.settings.masteryThreshold || 70) || !posttestPassed ? "learning" : "mastered";
+    const labels = { weak: "Perlu review", learning: "Sedang dipelajari", mastered: "Dikuasai" };
+    return { score, status, label: labels[status], cards, reviews: logs.length, quizAttempts: quizLogs.length, teachingAttempts: teachingSessions.length };
+  }
+
+  function conceptMasteryList(material) {
+    return (material?.concepts || []).map(concept => ({ concept, ...conceptMastery(material, concept) }))
+      .sort((a, b) => a.score - b.score || Number(b.concept.importance === "high") - Number(a.concept.importance === "high"));
+  }
+
+  function adaptiveRecommendation(material) {
+    const concepts = conceptMasteryList(material);
+    const target = concepts.find(item => item.status !== "mastered") || concepts[0] || null;
+    const due = materialCards(material.id).filter(card => new Date(cardDue(card)) <= new Date());
+    if (due.length) return { type: "review", target, cards: target?.cards.filter(card => new Date(cardDue(card)) <= new Date()).length ? target.cards : due, reason: `${due.length} kartu sudah waktunya diulang` };
+    if (target?.status === "new") return { type: "learn", target, cards: target.cards, reason: "Konsep ini belum pernah diuji" };
+    if (target && target.score < Number(state.settings.masteryThreshold || 70)) return { type: "practice", target, cards: target.cards, reason: `Mastery konsep baru ${target.score}%` };
+    return { type: "prove", target, cards: target?.cards || [], reason: "Saatnya membuktikan mastery dengan post-test" };
+  }
+
   function renderDashboard() {
     const due = dueCards();
     const concepts = state.materials.reduce((n,m) => n + (m.concepts?.length || 0), 0);
     $("#mMaterials").textContent = state.materials.length;
     $("#mConcepts").textContent = concepts;
     $("#mDue").textContent = due.length;
+    $("#ovMaterials").textContent = state.materials.length;
+    $("#ovConcepts").textContent = concepts;
+    $("#ovStreak").textContent = state.settings.streak || 0;
+    const allConceptMastery = state.materials.flatMap(material => conceptMasteryList(material).map(item => item.score));
+    const masteryAverage = allConceptMastery.length
+      ? Math.round(allConceptMastery.reduce((sum, score) => sum + score, 0) / allConceptMastery.length)
+      : 0;
+    $("#masteryAverage").textContent = `${masteryAverage}%`;
+
+    const activity = Array(7).fill(0);
+    const endOfToday = new Date(); endOfToday.setHours(23, 59, 59, 999);
+    state.logs.forEach(log => {
+      if (String(log.rating || "").startsWith("quiz-answer:")) return;
+      const date = new Date(log.created_at || log.createdAt || 0);
+      const daysAgo = Math.floor((endOfToday - date) / 86400000);
+      if (daysAgo >= 0 && daysAgo < 7) activity[6 - daysAgo] += Math.max(1, Math.round(Number(log.response_seconds || log.responseSeconds || 60) / 60));
+    });
+    const maxActivity = Math.max(...activity, 1);
+    activity.forEach((minutes, index) => {
+      const bar = $(`#weekBar${index}`);
+      if (!bar) return;
+      bar.style.height = `${Math.max(12, Math.round((minutes / maxActivity) * 100))}%`;
+      bar.classList.toggle("active", index === 6);
+      bar.title = `${minutes} menit`;
+    });
+    $("#weeklyTotal").textContent = `${activity.reduce((sum, value) => sum + value, 0)} menit`;
     $("#mStreak").textContent = `${state.settings.streak || 0}🔥`;
 
     const counts = { strong: 0, medium: 0, weak: 0 };
@@ -315,6 +409,7 @@
   function showDetail(id) {
     const m = findMaterial(id); if (!m) return;
     const cards = materialCards(id), quizzes = quizPool(id), concepts = m.concepts || [];
+    const conceptStates = conceptMasteryList(m);
     const p = $("#detailPanel"); p.hidden = false;
     const sections = m.study_sections || m.studySections || splitIntoSections(m.summary_long || m.summaryLong || "");
     const mastery = Math.round(Number(m.mastery_score || m.masteryScore || 0));
@@ -375,7 +470,18 @@
 
         <section class="detail-tab-panel" data-panel="concepts">
           <div class="section-intro"><h4>Konsep Inti</h4><p class="muted">Pakai bagian ini untuk melihat definisi, contoh, dan miskonsepsi utama.</p></div>
-          <div class="concept-grid">${concepts.map(c => `<div class="concept-mini"><b>${esc(c.name)}</b><p>${esc(c.definition || "")}</p>${c.example ? `<small><b>Contoh:</b> ${esc(c.example)}</small>` : ""}<small class="muted"><b>Miskonsepsi:</b> ${esc(c.common_misconception || c.commonMisconception || "-")}</small></div>`).join("") || "<p class='muted'>Belum ada konsep.</p>"}</div>
+          <div class="concept-grid">${conceptStates.map(item => {
+            const c = item.concept;
+            return `<div class="concept-mini concept-state ${item.status}">
+              <div class="concept-state-head"><b>${esc(c.name)}</b><span>${item.score}%</span></div>
+              <div class="concept-meter"><i style="width:${item.score}%"></i></div>
+              <small class="concept-status">${esc(item.label)} · ${item.reviews} review · ${item.quizAttempts || 0} kuis · ${item.teachingAttempts || 0} teaching</small>
+              <p>${esc(c.definition || "")}</p>
+              ${c.example ? `<small><b>Contoh:</b> ${esc(c.example)}</small>` : ""}
+              ${c.sourceRef || c.source_ref ? `<small class="source-ref">Sumber: ${esc(c.sourceRef || c.source_ref)}</small>` : ""}
+              <small class="muted"><b>Miskonsepsi:</b> ${esc(c.common_misconception || c.commonMisconception || "-")}</small>
+            </div>`;
+          }).join("") || "<p class='muted'>Belum ada konsep.</p>"}</div>
         </section>
 
         <section class="detail-tab-panel" data-panel="flashcards">
@@ -383,7 +489,7 @@
             <div><h4>Flashcard itu bukan dibaca semuanya.</h4><p class="muted">Mode yang benar: lihat pertanyaan → jawab di kepala → buka jawaban → beri rating. Rating ini menentukan jadwal review berikutnya.</p></div>
             <button class="primary" id="startFlashFromTab">Mulai Latihan Flashcard</button>
           </div>
-          <div class="stack">${cards.slice(0,10).map((c, i) => `<div class="flash-preview"><span>${i+1}</span><div><b>${esc(c.front)}</b><p class="muted">Jawaban disembunyikan di mode latihan supaya kamu benar-benar mengingat.</p><small>Due: ${shortDate(cardDue(c))} • ${esc(c.difficulty || "medium")}</small></div></div>`).join("") || "<p class='muted'>Belum ada flashcard.</p>"}</div>
+          <div class="stack">${cards.slice(0,10).map((c, i) => `<div class="flash-preview"><span>${i+1}</span><div><b>${esc(c.front)}</b><p class="muted">Jawaban disembunyikan di mode latihan supaya kamu benar-benar mengingat.</p><small>Due: ${shortDate(cardDue(c))} • ${esc(c.difficulty || "medium")}</small><button class="text-action edit-card" data-id="${esc(c.id)}">Edit kartu</button></div></div>`).join("") || "<p class='muted'>Belum ada flashcard.</p>"}</div>
         </section>
 
         <section class="detail-tab-panel" data-panel="quiz">
@@ -393,7 +499,7 @@
             <button class="quiz-mode-card" id="startQuizFromTab"><b>Practice Quiz</b><span>Latihan setelah membaca modul dan flashcard.</span></button>
             <button class="quiz-mode-card" id="startPosttestFromTab"><b>Post-test</b><span>Target mastery ${Number(state.settings.masteryThreshold || 70)}%.</span></button>
           </div>
-          <div class="stack quiz-preview-list">${quizzes.slice(0,8).map(q => `<div class="flash-mini"><b>[${esc(q.level || "understanding")}] ${esc(q.question)}</b><p class="muted">${esc(q.explanation || "")}</p></div>`).join("") || "<p class='muted'>Belum ada quiz.</p>"}</div>
+          <div class="stack quiz-preview-list">${quizzes.slice(0,8).map(q => `<div class="flash-mini"><b>[${esc(q.level || "understanding")}] ${esc(q.question)}</b><p class="muted">${esc(q.explanation || "")}</p><button class="text-action edit-quiz" data-id="${esc(q.id)}">Edit soal</button></div>`).join("") || "<p class='muted'>Belum ada quiz.</p>"}</div>
         </section>
       </div>
     `;
@@ -407,8 +513,69 @@
     $("#startPretestFromTab")?.addEventListener("click", () => startQuiz(id, "pretest"));
     $("#startQuizFromTab")?.addEventListener("click", () => startQuiz(id, "practice"));
     $("#startPosttestFromTab")?.addEventListener("click", () => startQuiz(id, "posttest"));
+    $$(".edit-card", p).forEach(button => button.onclick = () => openContentEditor("card", button.dataset.id, id));
+    $$(".edit-quiz", p).forEach(button => button.onclick = () => openContentEditor("quiz", button.dataset.id, id));
     $$(".detail-tab", p).forEach(btn => btn.onclick = () => switchDetailTab(p, btn.dataset.tab));
     setView("library", { target: "#detailPanel" });
+  }
+
+  function openContentEditor(type, itemId, materialId) {
+    const item = type === "card" ? state.flashcards.find(row => row.id === itemId) : state.quizzes.find(row => row.id === itemId);
+    if (!item) return;
+    const modal = $("#quizModal"), panel = $("#quizModalCard");
+    if (modal) { modal.classList.add("open"); modal.setAttribute("aria-hidden", "false"); }
+    if (type === "card") {
+      panel.innerHTML = `<div class="content-editor">
+        <div class="quiz-topline"><div><span class="badge soft">Editor</span><h3>Edit flashcard</h3></div><button class="ghost small" id="editorClose">×</button></div>
+        <label>Konsep<input id="editConcept" value="${esc(item.concept || "")}"></label>
+        <label>Pertanyaan<textarea id="editFront" rows="3">${esc(item.front || "")}</textarea></label>
+        <label>Jawaban<textarea id="editBack" rows="5">${esc(item.back || "")}</textarea></label>
+        <label>Kesulitan<select id="editDifficulty"><option value="easy">Easy</option><option value="medium">Medium</option><option value="hard">Hard</option></select></label>
+        <div class="action-row wrap"><button class="primary" id="editorSave">Simpan perubahan</button><button class="danger" id="editorDelete">Hapus kartu</button></div>
+      </div>`;
+      $("#editDifficulty", panel).value = item.difficulty || "medium";
+    } else {
+      panel.innerHTML = `<div class="content-editor">
+        <div class="quiz-topline"><div><span class="badge soft">Editor</span><h3>Edit soal</h3></div><button class="ghost small" id="editorClose">×</button></div>
+        <label>Konsep<input id="editConcept" value="${esc(item.concept || "")}"></label>
+        <label>Pertanyaan<textarea id="editQuestion" rows="3">${esc(item.question || "")}</textarea></label>
+        <label>Opsi, satu per baris<textarea id="editOptions" rows="6">${esc((item.options || []).join("\n"))}</textarea></label>
+        <label>Nomor jawaban benar<select id="editAnswer">${(item.options || []).map((_, i) => `<option value="${i}">Opsi ${i + 1}</option>`).join("")}</select></label>
+        <label>Penjelasan<textarea id="editExplanation" rows="4">${esc(item.explanation || "")}</textarea></label>
+        <div class="action-row wrap"><button class="primary" id="editorSave">Simpan perubahan</button><button class="danger" id="editorDelete">Hapus soal</button></div>
+      </div>`;
+      $("#editAnswer", panel).value = String(item.answer_index || 0);
+    }
+    $("#editorClose", panel).onclick = closeQuizModal;
+    $("#editorSave", panel).onclick = async () => {
+      let updated;
+      if (type === "card") {
+        const front = $("#editFront", panel).value.trim(), back = $("#editBack", panel).value.trim();
+        if (!front || !back) return alert("Pertanyaan dan jawaban wajib diisi.");
+        updated = { ...item, concept: $("#editConcept", panel).value.trim(), front, back, difficulty: $("#editDifficulty", panel).value, updated_at: now() };
+      } else {
+        const question = $("#editQuestion", panel).value.trim();
+        const options = $("#editOptions", panel).value.split("\n").map(value => value.trim()).filter(Boolean);
+        const answerIndex = Number($("#editAnswer", panel).value);
+        if (!question || options.length < 2 || answerIndex >= options.length) return alert("Soal harus memiliki minimal dua opsi dan jawaban benar yang valid.");
+        updated = { ...item, concept: $("#editConcept", panel).value.trim(), question, options, answer_index: answerIndex, explanation: $("#editExplanation", panel).value.trim(), updated_at: now() };
+      }
+      if (isCloud()) {
+        const table = type === "card" ? "flashcards" : "quizzes";
+        const { error } = await state.supa.from(table).update(updated).eq("id", item.id);
+        if (error) return alert(`Gagal menyimpan: ${error.message}`);
+      } else await put(type === "card" ? "flashcards" : "quizzes", updated);
+      closeQuizModal(); await refreshAll(); showDetail(materialId);
+    };
+    $("#editorDelete", panel).onclick = async () => {
+      if (!confirm(`Hapus ${type === "card" ? "flashcard" : "soal"} ini?`)) return;
+      const table = type === "card" ? "flashcards" : "quizzes";
+      if (isCloud()) {
+        const { error } = await state.supa.from(table).delete().eq("id", item.id);
+        if (error) return alert(`Gagal menghapus: ${error.message}`);
+      } else await del(table, item.id);
+      closeQuizModal(); await refreshAll(); showDetail(materialId);
+    };
   }
 
   function switchDetailTab(root, tab) {
@@ -425,7 +592,7 @@
   function renderStudySections(sections = [], fallback = "") {
     const list = Array.isArray(sections) && sections.length ? sections : splitIntoSections(fallback);
     if (!list.length) return `<div class="prose-block">${htmlParagraphs(fallback || "-")}</div>`;
-    return `<div class="study-sections">${list.map((s, i) => `<article class="study-section"><div class="step-no">${i+1}</div><div><h5>${esc(s.title || `Bagian ${i+1}`)}</h5><div class="prose-block">${htmlParagraphs(s.explanation || s.content || "-")}</div>${s.example ? `<p class="example"><b>Contoh:</b> ${esc(s.example)}</p>` : ""}${s.activeRecall || s.active_recall ? `<p class="recall"><b>Active recall:</b> ${esc(s.activeRecall || s.active_recall)}</p>` : ""}</div></article>`).join("")}</div>`;
+    return `<div class="study-sections">${list.map((s, i) => `<article class="study-section"><div class="step-no">${i+1}</div><div><h5>${esc(s.title || `Bagian ${i+1}`)}</h5>${s.sourceRef || s.source_ref ? `<span class="source-ref">Sumber: ${esc(s.sourceRef || s.source_ref)}</span>` : ""}<div class="prose-block">${htmlParagraphs(s.explanation || s.content || "-")}</div>${s.example ? `<p class="example"><b>Contoh:</b> ${esc(s.example)}</p>` : ""}${s.activeRecall || s.active_recall ? `<p class="recall"><b>Active recall:</b> ${esc(s.activeRecall || s.active_recall)}</p>` : ""}</div></article>`).join("")}</div>`;
   }
 
   function htmlParagraphs(text = "") {
@@ -434,18 +601,39 @@
     return clean.split(/\n{2,}|(?<=\.)\s+(?=[A-ZÀ-ÝA-Z0-9])/g).map(p => `<p>${esc(p.trim())}</p>`).join("");
   }
 
-  async function extractPdf(file) {
+  function parsePageRange(value, totalPages) {
+    const clean = String(value || "").trim();
+    if (!clean) return Array.from({ length: Math.min(totalPages, 200) }, (_, i) => i + 1);
+    const pages = new Set();
+    for (const part of clean.split(",")) {
+      const match = part.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+      if (!match) throw new Error(`Rentang halaman tidak valid: ${part}`);
+      const start = Number(match[1]), end = Number(match[2] || match[1]);
+      if (start < 1 || end < start || end > totalPages) throw new Error(`Halaman harus berada antara 1-${totalPages}.`);
+      for (let page = start; page <= end; page++) pages.add(page);
+    }
+    if (pages.size > 200) throw new Error("Maksimal 200 halaman per proses.");
+    return [...pages].sort((a, b) => a - b);
+  }
+
+  async function extractPdf(file, range = "") {
     if (!window.pdfjsLib) throw new Error("pdf.js belum terload. Coba cek internet/CDN.");
+    if (file.size > 50 * 1024 * 1024) throw new Error("PDF maksimal 50 MB.");
     pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
     const buf = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    const selectedPages = parsePageRange(range, pdf.numPages);
     let text = "";
-    for (let i = 1; i <= pdf.numPages; i++) {
+    let lowTextPages = 0;
+    for (const i of selectedPages) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      text += `\n\n--- Halaman ${i} ---\n` + content.items.map(it => it.str).join(" ");
+      const pageText = content.items.map(it => it.str).join(" ").replace(/\s+/g, " ").trim();
+      if (pageText.length < 30) lowTextPages += 1;
+      text += `\n\n--- Halaman ${i} ---\n${pageText}`;
     }
-    return text.trim();
+    if (!text.replace(/--- Halaman \d+ ---/g, "").trim() || lowTextPages === selectedPages.length) throw new Error("PDF tampaknya berupa scan/gambar. OCR diperlukan sebelum diproses.");
+    return { text: text.trim(), pages: selectedPages.length, lowTextPages, totalPages: pdf.numPages };
   }
 
   async function generateMaterial() {
@@ -521,7 +709,8 @@
         title: String(x.title || x.heading || `Bagian ${i + 1}`).slice(0, 120),
         explanation: String(x.explanation || x.content || x.body || "").slice(0, 1400),
         example: String(x.example || x.contoh || "").slice(0, 700),
-        activeRecall: String(x.activeRecall || x.active_recall || x.question || "").slice(0, 400)
+        activeRecall: String(x.activeRecall || x.active_recall || x.question || "").slice(0, 400),
+        sourceRef: String(x.sourceRef || x.source_ref || "").slice(0, 120)
       })).filter(x => x.title || x.explanation);
     }
     return splitIntoSections(summary);
@@ -542,7 +731,8 @@
       definition: String(c.definition || c.explanation || "").slice(0, 600),
       example: String(c.example || "").slice(0, 400),
       common_misconception: String(c.common_misconception || c.commonMisconception || c.misconception || "").slice(0, 400),
-      importance: String(c.importance || "medium")
+      importance: String(c.importance || "medium"),
+      sourceRef: String(c.sourceRef || c.source_ref || "").slice(0, 120)
     }));
   }
   function normalizeCards(list = [], m) {
@@ -603,10 +793,16 @@
 
   async function callAI(type, payload) {
     const body = { type, provider: state.settings.provider, model: modelForProvider(), payload };
-    const res = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const headers = { "Content-Type": "application/json" };
+    if (state.supa) {
+      const { data } = await state.supa.auth.getSession();
+      if (data?.session?.access_token) headers.Authorization = `Bearer ${data.session.access_token}`;
+    }
+    const res = await fetch("/api/generate", { method: "POST", headers, body: JSON.stringify(body) });
     const data = await res.json().catch(() => null);
     if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
     if (!data?.result) throw new Error("Server tidak mengembalikan result.");
+    if (Array.isArray(data.warnings) && data.warnings.length) console.warn("Peringatan kualitas AI:", data.warnings);
     return data.result;
   }
   function modelForProvider() {
@@ -744,12 +940,48 @@
     return [...existing, ...generated].slice(0, 12);
   }
 
+  function quizIdentity(quiz) {
+    return String(quiz.id || conceptKey(quiz.question || "").slice(0, 80));
+  }
+
+  function spreadByConcept(quizzes, limit, preferredLevels = []) {
+    const ranked = [...quizzes].sort((a, b) => {
+      const ai = preferredLevels.indexOf(a.level);
+      const bi = preferredLevels.indexOf(b.level);
+      return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+    });
+    const selected = [], seenConcepts = new Set();
+    for (const quiz of ranked) {
+      const key = conceptKey(quiz.concept || quiz.question);
+      if (!seenConcepts.has(key)) { selected.push(quiz); seenConcepts.add(key); }
+      if (selected.length >= limit) return selected;
+    }
+    for (const quiz of ranked) {
+      if (!selected.includes(quiz)) selected.push(quiz);
+      if (selected.length >= limit) break;
+    }
+    return selected;
+  }
+
+  function quizzesForMode(materialId, mode) {
+    const pool = quizPool(materialId);
+    if (mode === "pretest") return spreadByConcept(shuffle(pool), Math.min(8, pool.length), ["definition", "understanding"]);
+    if (mode === "practice") {
+      const material = findMaterial(materialId);
+      const weak = new Set(conceptMasteryList(material).filter(item => item.status !== "mastered").map(item => conceptKey(item.concept.name)));
+      const prioritized = [...pool].sort((a, b) => Number(weak.has(conceptKey(b.concept))) - Number(weak.has(conceptKey(a.concept))));
+      return spreadByConcept(prioritized, Math.min(10, pool.length), ["understanding", "application", "analysis"]);
+    }
+    const seenInLearning = new Set(state.logs.filter(log => log.material_id === materialId && /^quiz-answer:(pretest|practice):/.test(log.rating || "")).map(log => String(log.rating).split(":")[2]));
+    const unseen = pool.filter(quiz => !seenInLearning.has(encodeURIComponent(quizIdentity(quiz))));
+    const candidates = unseen.length >= Math.min(5, pool.length) ? unseen : pool;
+    return spreadByConcept(shuffle(candidates), Math.min(12, candidates.length), ["analysis", "application", "understanding"]);
+  }
+
   function startQuiz(materialId, mode = "practice") {
-    let quizzes = quizPool(materialId);
+    const quizzes = quizzesForMode(materialId, mode);
     if (!quizzes.length) return alert("Belum ada quiz untuk materi ini.");
-    if (mode === "pretest") quizzes = shuffle(quizzes).slice(0, Math.min(8, quizzes.length));
-    if (mode === "posttest") quizzes = shuffle(quizzes).slice(0, Math.min(12, quizzes.length));
-    state.currentQuiz = { materialId, mode, quizzes, index: 0, correct: 0, answered: false, mistakes: [], startedAt: Date.now() };
+    state.currentQuiz = { materialId, mode, quizzes, index: 0, correct: 0, answered: false, mistakes: [], answers: [], startedAt: Date.now() };
     showQuiz();
   }
 
@@ -767,6 +999,18 @@
     if (mode === "pretest") return { title: "Tujuan sesi", text: "Jawab tanpa melihat materi. Ini cuma diagnosis awal, jadi salah itu wajar." };
     if (mode === "posttest") return { title: "Tujuan sesi", text: `Buktikan penguasaan materi. Target mastery: ${Number(state.settings.masteryThreshold || 70)}%.` };
     return { title: "Cara mengerjakan", text: "Pilih jawaban terbaik. Setelah salah, Aiyone akan mendorong konsep terkait masuk review." };
+  }
+
+  function quizConceptSummary(answers = []) {
+    const groups = new Map();
+    answers.forEach(answer => {
+      const name = answer.concept || "Umum";
+      if (!groups.has(name)) groups.set(name, { name, correct: 0, total: 0 });
+      const group = groups.get(name);
+      group.total += 1;
+      if (answer.correct) group.correct += 1;
+    });
+    return [...groups.values()].map(group => ({ ...group, score: Math.round(group.correct / group.total * 100) })).sort((a, b) => a.score - b.score);
   }
 
   function showQuiz() {
@@ -800,14 +1044,19 @@
     qstate.answered = true;
     const chosen = Number(btn.dataset.i), answer = Number(q.answer_index || 0);
     const correct = chosen === answer;
-    if (correct) qstate.correct += 1; else qstate.mistakes.push({ question: q.question, chosen: q.options[chosen], correct: q.options[answer], explanation: q.explanation || "" });
+    const answerRecord = { quizId: quizIdentity(q), concept: q.concept || "Umum", level: q.level || "understanding", correct, chosen, answer };
+    qstate.answers.push(answerRecord);
+    if (correct) qstate.correct += 1; else qstate.mistakes.push({ quizId: answerRecord.quizId, concept: answerRecord.concept, question: q.question, chosen: q.options[chosen], correct: q.options[answer], explanation: q.explanation || "" });
     $$(".quiz-option", panel).forEach((b, i) => {
       b.disabled = true;
-      b.classList.add(i === answer ? "correct" : i === chosen ? "wrong" : "dimmed");
+      if (qstate.mode === "practice") b.classList.add(i === answer ? "correct" : i === chosen ? "wrong" : "dimmed");
+      else b.classList.add(i === chosen ? "selected" : "dimmed");
     });
     const exp = $("#quizExplain", panel);
     exp.hidden = false;
-    exp.innerHTML = `<b>${correct ? "Benar." : "Belum tepat."}</b><p>${esc(q.explanation || "Cek kembali konsepnya dari materi dan flashcard.")}</p>`;
+    exp.innerHTML = qstate.mode === "practice"
+      ? `<b>${correct ? "Benar." : "Belum tepat."}</b><p>${esc(q.explanation || "Cek kembali konsepnya dari materi dan flashcard.")}</p>`
+      : `<b>Jawaban disimpan.</b><p>Pembahasan dan hasil ditampilkan setelah seluruh ${qstate.mode === "pretest" ? "diagnosis" : "post-test"} selesai.</p>`;
     const next = $("#quizNext", panel);
     next.hidden = false;
     next.onclick = async () => {
@@ -815,10 +1064,12 @@
       qstate.answered = false;
       if (qstate.index >= qstate.quizzes.length) {
         const score = Math.round(qstate.correct / qstate.quizzes.length * 100);
-        await applyQuizResults(qstate.materialId, score, qstate.mistakes, qstate.mode, qstate.startedAt);
+        await applyQuizResults(qstate.materialId, score, qstate.mistakes, qstate.mode, qstate.startedAt, qstate.answers);
         await updateSmartStreak(score);
+        const conceptResults = quizConceptSummary(qstate.answers);
+        const conceptResultsHtml = `<div class="concept-result-list"><h4>Hasil per konsep</h4>${conceptResults.map(item => `<div><span>${esc(item.name)}</span><i><em style="width:${item.score}%"></em></i><b>${item.score}%</b></div>`).join("")}</div>`;
         const mistakesHtml = qstate.mistakes.length ? `<div class="mistake-list"><h4>Soal yang perlu diulang</h4>${qstate.mistakes.map((x, i) => `<div class="flash-mini"><b>${i+1}. ${esc(x.question)}</b><p><b>Jawaban benar:</b> ${esc(x.correct)}</p><p class="muted">${esc(x.explanation || "Cek konsep terkait dari materi.")}</p></div>`).join("")}</div>` : `<p class="muted">Tidak ada soal salah. Coba teaching mode untuk memastikan kamu bisa menjelaskan ulang.</p>`;
-        panel.innerHTML = `<div class="quiz-result quiz-result-v7"><span class="badge ${score >= Number(state.settings.masteryThreshold || 70) ? "cloud" : "local"}">${score >= Number(state.settings.masteryThreshold || 70) ? "Lulus mastery" : "Perlu review"}</span><h3>Hasil ${esc(quizModeLabel(qstate.mode))}</h3><div class="score-hero"><strong>${score}%</strong><span>${qstate.correct}/${qstate.quizzes.length} benar</span></div><p class="muted">${qstate.mode === "pretest" ? "Ini baru diagnosis awal. Lanjutkan ke modul belajar bertahap." : qstate.mode === "posttest" ? "Post-test dipakai sebagai bukti mastery. Kalau belum lulus, ulangi flashcard dan konsep salah." : "Quiz latihan selesai. Konsep yang salah akan diprioritaskan untuk review."}</p>${mistakesHtml}<div class="action-row wrap"><button class="primary" id="retryWrong">Latihan konsep salah</button><button class="ghost" id="goFlashAfterQuiz">Flashcard</button><button class="ghost" id="goTeachAfterQuiz">Teaching Mode</button><button class="ghost" id="backLibrary">Kembali</button></div></div>`;
+        panel.innerHTML = `<div class="quiz-result quiz-result-v7"><span class="badge ${score >= Number(state.settings.masteryThreshold || 70) ? "cloud" : "local"}">${score >= Number(state.settings.masteryThreshold || 70) ? "Lulus mastery" : "Perlu review"}</span><h3>Hasil ${esc(quizModeLabel(qstate.mode))}</h3><div class="score-hero"><strong>${score}%</strong><span>${qstate.correct}/${qstate.quizzes.length} benar</span></div><p class="muted">${qstate.mode === "pretest" ? "Ini diagnosis awal dan belum menjadi bukti mastery." : qstate.mode === "posttest" ? "Post-test menjadi bukti mastery. Konsep yang belum lulus akan masuk sesi adaptif." : "Quiz latihan selesai. Konsep yang salah akan diprioritaskan untuk review."}</p>${conceptResultsHtml}${mistakesHtml}<div class="action-row wrap"><button class="primary" id="retryWrong">Latihan konsep salah</button><button class="ghost" id="goFlashAfterQuiz">Flashcard</button><button class="ghost" id="goTeachAfterQuiz">Teaching Mode</button><button class="ghost" id="backLibrary">Kembali</button></div></div>`;
         const doneMaterialId = qstate.materialId;
         state.currentQuiz = null;
         await refreshAll();
@@ -830,22 +1081,35 @@
     };
   }
 
-  async function applyQuizResults(materialId, score, mistakes = [], mode = "practice", startedAt = Date.now()) {
+  async function applyQuizResults(materialId, score, mistakes = [], mode = "practice", startedAt = Date.now(), answers = []) {
     const m = findMaterial(materialId);
     if (!m) return;
-    const updatedMaterial = { ...m, mastery_score: Math.max(Number(m.mastery_score || 0), score), updated_at: now() };
-    const conceptsWrong = new Set(mistakes.map(x => String(x.question || "").toLowerCase()));
+    const currentMastery = Number(m.mastery_score || 0);
+    const updatedMaterial = { ...m, mastery_score: mode === "posttest" ? Math.max(currentMastery, score) : currentMastery, updated_at: now() };
+    const conceptsWrong = new Set(mistakes.map(x => conceptKey(x.concept || x.question)));
     const dueSoon = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-    const cardsToNudge = materialCards(materialId).filter(c => [...conceptsWrong].some(q => q.includes(String(c.concept || "").toLowerCase()) || q.includes(String(c.front || "").slice(0, 30).toLowerCase()))).slice(0, 5);
+    const cardsToNudge = materialCards(materialId).filter(c => [...conceptsWrong].some(key => conceptKey(c.concept || "") === key || conceptKey(`${c.front || ""} ${c.back || ""}`).includes(key))).slice(0, 8);
     const log = { id: uid("log"), user_id: state.user?.id || null, card_id: null, material_id: materialId, rating: `quiz-${mode}-${score}`, correct: score >= Number(state.settings.masteryThreshold || 70), previous_due_at: null, next_due_at: null, score, quiz_mode: mode, response_seconds: Math.max(1, Math.round((Date.now() - startedAt) / 1000)), confidence: null, retention_before: null, created_at: now() };
+    const secondsPerAnswer = Math.max(1, Math.round(Number(log.response_seconds) / Math.max(answers.length, 1)));
+    const answerLogs = answers.map(answer => ({
+      id: uid("log"), user_id: state.user?.id || null, card_id: null, material_id: materialId,
+      rating: `quiz-answer:${mode}:${encodeURIComponent(answer.quizId)}:${encodeURIComponent(answer.concept || "Umum")}`,
+      correct: Boolean(answer.correct), previous_due_at: null, next_due_at: null,
+      score: answer.correct ? 100 : 0, quiz_mode: mode, response_seconds: secondsPerAnswer,
+      confidence: null, retention_before: null, created_at: now()
+    }));
     if (isCloud()) {
-      const { error } = await state.supa.from("materials").update({ mastery_score: updatedMaterial.mastery_score, updated_at: updatedMaterial.updated_at }).eq("id", materialId);
-      if (error) console.warn(error.message);
+      if (mode === "posttest") {
+        const { error } = await state.supa.from("materials").update({ mastery_score: updatedMaterial.mastery_score, updated_at: updatedMaterial.updated_at }).eq("id", materialId);
+        if (error) console.warn(error.message);
+      }
       await insertReviewLog(log);
+      for (const answerLog of answerLogs) await insertReviewLog(answerLog);
       for (const c of cardsToNudge) await state.supa.from("flashcards").update({ due_at: dueSoon, updated_at: now() }).eq("id", c.id);
     } else {
       await put("materials", updatedMaterial);
       await put("review_logs", log);
+      for (const answerLog of answerLogs) await put("review_logs", answerLog);
       for (const c of cardsToNudge) await put("flashcards", { ...c, due_at: dueSoon, updated_at: now() });
     }
   }
@@ -937,12 +1201,13 @@
     const materialId = $("#teachMaterial").value; const m = findMaterial(materialId);
     if (!m) return alert("Pilih materi dulu.");
     const answer = $("#teachAnswer").value.trim(); if (answer.length < 50) return alert("Penjelasan terlalu pendek. Coba jelaskan lebih lengkap.");
+    const focus = $("#teachFocus").value.trim() || adaptiveRecommendation(m).target?.concept?.name || "";
     const out = $("#teachOutput"); out.hidden = false; out.textContent = "AI sedang menilai pemahamanmu...";
     try {
-      const result = await callAI("evaluateTeaching", { material: { title: m.title, summary: m.summary_long || m.summary_short, concepts: m.concepts || [] }, focus: $("#teachFocus").value.trim(), answer });
+      const result = await callAI("evaluateTeaching", { material: { title: m.title, summary: m.summary_long || m.summary_short, concepts: m.concepts || [] }, focus, answer });
       const score = Math.round(Number(result.masteryScore || result.mastery_score || 0));
-      out.innerHTML = `<div class="teach-score"><span>Skor Penguasaan</span><strong>${score}%</strong></div><div class="feedback-grid"><section><h4>Feedback</h4>${htmlParagraphs(result.feedback || "-")}</section><section><h4>Miskonsepsi</h4><ul>${(result.misconceptions || []).length ? (result.misconceptions || []).map(x => `<li>${esc(x)}</li>`).join("") : "<li>Tidak terdeteksi.</li>"}</ul></section><section><h4>Bagian yang Kurang</h4><ul>${(result.missingPoints || result.missing_points || []).length ? (result.missingPoints || result.missing_points || []).map(x => `<li>${esc(x)}</li>`).join("") : "<li>Tidak ada catatan khusus.</li>"}</ul></section><section><h4>Langkah Berikutnya</h4><p>${esc(result.nextAction || result.next_action || "Review kartu lemah.")}</p></section></div><div class="rubric-bars">${renderRubric(result.rubric || {})}</div>`;
-      const row = { id: uid("teach"), user_id: state.user?.id || null, material_id: materialId, answer_text: answer, result, created_at: now() };
+      out.innerHTML = `<div class="teach-focus-result"><span>Konsep yang dinilai</span><b>${esc(focus || "Keseluruhan materi")}</b></div><div class="teach-score"><span>Skor Penguasaan</span><strong>${score}%</strong></div><div class="feedback-grid"><section><h4>Feedback</h4>${htmlParagraphs(result.feedback || "-")}</section><section><h4>Miskonsepsi</h4><ul>${(result.misconceptions || []).length ? (result.misconceptions || []).map(x => `<li>${esc(x)}</li>`).join("") : "<li>Tidak terdeteksi.</li>"}</ul></section><section><h4>Bagian yang Kurang</h4><ul>${(result.missingPoints || result.missing_points || []).length ? (result.missingPoints || result.missing_points || []).map(x => `<li>${esc(x)}</li>`).join("") : "<li>Tidak ada catatan khusus.</li>"}</ul></section><section><h4>Langkah Berikutnya</h4><p>${esc(result.nextAction || result.next_action || "Review kartu lemah.")}</p></section></div><div class="rubric-bars">${renderRubric(result.rubric || {})}</div>`;
+      const row = { id: uid("teach"), user_id: state.user?.id || null, material_id: materialId, answer_text: answer, result: { ...result, _focus: focus }, created_at: now() };
       if (isCloud()) await state.supa.from("teaching_sessions").insert(row); else await put("teaching_sessions", row);
       await updateSmartStreak(score);
       await refreshAll();
@@ -1023,6 +1288,14 @@
     if (!state.currentSession || state.currentSession.materialId !== m.id) state.currentSession = { materialId: m.id, step: 0, recall: {} };
     if (select) select.value = m.id;
     const sections = getStudySectionsForMaterial(m);
+    const recommendation = adaptiveRecommendation(m);
+    if (!state.currentSession.adaptiveInitialized) {
+      const targetName = conceptKey(recommendation.target?.concept?.name || "");
+      const targetStep = targetName ? sections.findIndex(section => conceptKey(`${section.title || ""} ${section.explanation || section.content || ""}`).includes(targetName)) : -1;
+      if (targetStep >= 0) state.currentSession.step = targetStep;
+      state.currentSession.targetConcept = recommendation.target?.concept?.name || "";
+      state.currentSession.adaptiveInitialized = true;
+    }
     const step = clamp(state.currentSession.step || 0, 0, Math.max(sections.length - 1, 0));
     state.currentSession.step = step;
     const sec = sections[step] || { title: materialTitle(m), explanation: m.summary_long || m.summary_short || "Belum ada materi bertahap.", example: "", activeRecall: "Jelaskan inti bagian ini dengan bahasamu." };
@@ -1032,9 +1305,10 @@
     box.className = "session-box session-v7";
     box.innerHTML = `
       <div class="learning-coach-card">
-        <span class="badge soft">Aiyone Coach</span>
-        <h3>Hari ini, ikuti urutan belajar ini.</h3>
-        <p>Jangan langsung loncat-loncat. Mulai dari diagnosis, pelajari bagian kecil, lalu uji dengan flashcard dan post-test.</p>
+        <span class="badge soft">Rekomendasi adaptif</span>
+        <h3>${recommendation.target ? `Fokus: ${esc(recommendation.target.concept.name)}` : "Mulai dari fondasi materi."}</h3>
+        <p>${esc(recommendation.reason)}. ${recommendation.type === "review" ? "Kerjakan retrieval sebelum membaca ulang." : recommendation.type === "learn" ? "Pelajari bagian terkait, lalu jawab active recall." : recommendation.type === "practice" ? "Perkuat dengan flashcard dan latihan." : "Gunakan post-test tanpa melihat materi."}</p>
+        ${recommendation.target ? `<div class="adaptive-score"><span>Mastery konsep</span><b>${recommendation.target.score}%</b><i><em style="width:${recommendation.target.score}%"></em></i></div>` : ""}
       </div>
       <div class="journey-steps">
         <button class="journey-step" id="sessionPretest"><span>1</span><b>Pre-test</b><small>Cek awal</small></button>
@@ -1056,7 +1330,7 @@
       <div class="action-row wrap session-actions">
         <button class="ghost" id="prevStep" ${step <= 0 ? "disabled" : ""}>← Sebelumnya</button>
         <button class="primary" id="nextStep">${step + 1 >= sections.length ? "Selesai baca → latihan" : "Saya paham, lanjut →"}</button>
-        <button class="ghost" id="sessionTeach">Jelaskan ke AI</button>
+        <button class="ghost" id="sessionTeach">Nilai jawaban ini</button>
       </div>`;
     const savedRecall = state.currentSession.recall?.[step] || "";
     $("#sessionRecall", box).value = savedRecall;
@@ -1065,15 +1339,24 @@
     $("#nextStep", box).onclick = () => { if (step + 1 >= sections.length) { startFlashcards(m.id); } else { state.currentSession.step = step + 1; renderSession(); scrollToTarget("#readStep"); } };
     $("#jumpRead", box).onclick = () => scrollToTarget("#readStep");
     $("#sessionPretest", box).onclick = () => startQuiz(m.id, "pretest");
-    $("#sessionFlash", box).onclick = () => startFlashcards(m.id);
+    $("#sessionFlash", box).onclick = () => startFlashcards(m.id, recommendation.cards.length ? recommendation.cards : null);
     $("#sessionQuiz", box).onclick = () => startQuiz(m.id, "practice");
     $("#sessionPosttest", box).onclick = () => startQuiz(m.id, "posttest");
-    $("#sessionTeach", box).onclick = () => { setView("teach", { target: "#teach" }); $("#teachMaterial").value = m.id; };
+    $("#sessionTeach", box).onclick = () => {
+      const recall = $("#sessionRecall", box).value.trim();
+      setView("teach", { target: "#teach" });
+      $("#teachMaterial").value = m.id;
+      $("#teachFocus").value = recommendation.target?.concept?.name || sec.title || "";
+      $("#teachAnswer").value = recall;
+      $("#teachOutput").hidden = true;
+      $("#teachAnswer").focus();
+    };
   }
 
   function renderAnalytics() {
-    const reviewCount = state.logs.length;
-    const correct = state.logs.filter(l => l.correct).length;
+    const visibleLogs = state.logs.filter(log => !String(log.rating || "").startsWith("quiz-answer:"));
+    const reviewCount = visibleLogs.length;
+    const correct = visibleLogs.filter(l => l.correct).length;
     const acc = reviewCount ? Math.round((correct / reviewCount) * 100) : 0;
     const weakCards = state.flashcards.filter(c => memoryStatus(c) === "weak");
     const setText = (id, val) => { const el = $(id); if (el) el.textContent = val; };
@@ -1099,7 +1382,7 @@
     const actBox = $("#activityList");
     if (actBox) {
       const activities = [
-        ...state.logs.map(l => ({ type:"Review", at:l.created_at || now(), text:`${l.rating || "review"} • ${l.correct ? "benar" : "perlu ulang"}` })),
+        ...visibleLogs.map(l => ({ type:"Review", at:l.created_at || now(), text:`${l.rating || "review"} • ${l.correct ? "benar" : "perlu ulang"}` })),
         ...state.teaching.map(t => ({ type:"Teaching", at:t.created_at || now(), text:`skor ${Math.round(Number(t.result?.masteryScore || t.result?.mastery_score || 0))}%` }))
       ].sort((a,b) => new Date(b.at) - new Date(a.at)).slice(0, 12);
       actBox.innerHTML = "";
@@ -1113,7 +1396,7 @@
     if (!isCloud()) { if (!silent) alert("Login dulu sampai status Cloud aktif."); return false; }
     const [lm, lc, lq, ll, lt] = await Promise.all([getAll("materials"), getAll("flashcards"), getAll("quizzes"), getAll("review_logs"), getAll("teaching_sessions")]);
     const uidUser = state.user.id;
-    const localMaterials = lm.filter(m => !m.user_id || m.user_id !== uidUser);
+    const localMaterials = lm.filter(m => !m.user_id);
     if (!localMaterials.length) { if (!silent) alert("Tidak ada materi lokal yang perlu dipindahkan."); return true; }
     if (!silent && !confirm(`Pindahkan ${localMaterials.length} materi lokal ke Cloud? Data lokal tidak dihapus.`)) return false;
     const ids = new Set(localMaterials.map(m => m.id));
@@ -1180,7 +1463,12 @@
     $("#pdfInput").onchange = async (e) => {
       const file = e.target.files[0]; if (!file) return;
       setStatus("Membaca PDF...");
-      try { $("#textInput").value = await extractPdf(file); setStatus(`PDF terbaca: ${$("#textInput").value.length.toLocaleString("id-ID")} karakter.`); }
+      try {
+        const extracted = await extractPdf(file, $("#pdfPageRange")?.value || "");
+        $("#textInput").value = extracted.text;
+        const warning = extracted.lowTextPages ? ` ${extracted.lowTextPages} halaman hanya memiliki sedikit teks dan mungkin hasil scan.` : "";
+        setStatus(`PDF terbaca: ${extracted.pages}/${extracted.totalPages} halaman, ${extracted.text.length.toLocaleString("id-ID")} karakter.${warning}`);
+      }
       catch (err) { setStatus(`Gagal baca PDF: ${err.message}`); }
     };
     $("#generateBtn").onclick = generateMaterial;

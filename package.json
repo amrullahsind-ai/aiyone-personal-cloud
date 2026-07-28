@@ -1,8 +1,9 @@
 {
-  "name": "aiyone-personal-v7",
-  "version": "7.0.0",
+  "name": "aiyone-personal",
+  "version": "11.0.0",
   "private": true,
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node tests/api-validation.test.js"
   }
 }

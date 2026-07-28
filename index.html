@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#5b4bff" />
-  <title>Aiyone Personal v8</title>
+  <meta name="theme-color" content="#c77af0" />
+  <title>Aiyone Personal</title>
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="styles.css?v=aiyone-v8-1" />
+  <link rel="stylesheet" href="styles.css?v=aiyone-v11-ready" />
 </head>
 <body>
   <div class="drawer-overlay" id="drawerOverlay" aria-hidden="true"></div>
@@ -49,7 +49,7 @@
     <main class="main">
       <header class="topbar">
         <div>
-          <p class="eyebrow">Master what you study, not just pass.</p>
+          <p class="eyebrow">Your personal learning space</p>
           <h2 id="pageTitle">Dashboard</h2>
         </div>
         <div class="top-actions">
@@ -60,6 +60,60 @@
       </header>
 
       <section class="view active" id="dashboard">
+        <div class="overview-heading">
+          <div>
+            <span class="eyebrow">Ringkasan belajar</span>
+            <h3>Learning<br />Overview</h3>
+          </div>
+          <span class="period-pill">7 hari terakhir</span>
+        </div>
+
+        <div class="overview-layout">
+          <article class="panel weekly-panel">
+            <div class="weekly-head">
+              <div><span class="panel-kicker">Aktivitas</span><h3>Waktu belajar</h3></div>
+              <strong id="weeklyTotal">0 menit</strong>
+            </div>
+            <div class="weekly-chart" aria-label="Aktivitas belajar tujuh hari terakhir">
+              <div class="chart-day"><i id="weekBar0"></i><span>Sen</span></div>
+              <div class="chart-day"><i id="weekBar1"></i><span>Sel</span></div>
+              <div class="chart-day"><i id="weekBar2"></i><span>Rab</span></div>
+              <div class="chart-day"><i id="weekBar3"></i><span>Kam</span></div>
+              <div class="chart-day"><i id="weekBar4"></i><span>Jum</span></div>
+              <div class="chart-day"><i id="weekBar5"></i><span>Sab</span></div>
+              <div class="chart-day"><i id="weekBar6" class="active"></i><span>Min</span></div>
+            </div>
+          </article>
+
+          <div class="overview-side">
+            <article class="summary-card lilac">
+              <span class="summary-icon">01</span>
+              <p>Materi & konsep</p>
+              <strong><span id="ovMaterials">0</span> / <span id="ovConcepts">0</span></strong>
+            </article>
+            <article class="summary-card blue">
+              <span class="summary-icon">02</span>
+              <p>Rata-rata mastery</p>
+              <strong id="masteryAverage">0%</strong>
+            </article>
+          </div>
+        </div>
+
+        <div class="streak-strip">
+          <span class="streak-mark">&#9889;</span>
+          <div><small>Konsistensi belajar</small><strong><span id="ovStreak">0</span> hari berturut-turut</strong></div>
+          <span class="streak-arrow">&rarr;</span>
+        </div>
+
+        <div class="dashboard-intro">
+          <div>
+            <span class="eyebrow">Learning overview</span>
+            <h3>Belajar lebih terarah,<br />ingat lebih lama.</h3>
+            <p>Aiyone memilih langkah belajar berikutnya berdasarkan progres dan prediksi lupa.</p>
+          </div>
+          <button class="primary" data-jump="session">Mulai belajar <span aria-hidden="true">&rarr;</span></button>
+        </div>
+
         <div class="metrics">
           <article><span>Materi</span><strong id="mMaterials">0</strong></article>
           <article><span>Konsep</span><strong id="mConcepts">0</strong></article>
@@ -134,6 +188,10 @@
             <input id="pdfInput" type="file" accept="application/pdf" />
             <strong>Upload PDF</strong>
             <span>PDF teks bisa diekstrak. PDF scan/foto perlu OCR dan belum sempurna di versi ini.</span>
+          </label>
+          <label class="pdf-range-field">Halaman yang diproses, opsional
+            <input id="pdfPageRange" placeholder="Contoh: 1-12 atau 2,4,8-10" />
+            <small class="muted">Kosongkan untuk membaca semua halaman, maksimal 200 halaman.</small>
           </label>
 
           <div class="field-row">
@@ -346,6 +404,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-  <script src="app.js?v=aiyone-v8-1"></script>
+  <script src="app.js?v=aiyone-v11-ready"></script>
 </body>
 </html>

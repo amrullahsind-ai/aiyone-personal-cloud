@@ -43,3 +43,27 @@ Setelah deploy, buka Aiyone → klik Profil pojok kanan atas → login. Data aka
 ## Supabase
 
 Tidak perlu isi kode Supabase di Settings. Kalau database lama error kolom, baca `MIGRASI_SUPABASE_AMAN.md`.
+
+## Perlindungan endpoint AI
+
+Jika `SUPABASE_URL` dan `SUPABASE_ANON_KEY` tersedia, endpoint AI otomatis
+mewajibkan sesi login valid. Gunakan `AI_REQUIRE_AUTH=false` hanya untuk
+pengembangan lokal tanpa akun.
+
+`AI_RATE_LIMIT` mengatur batas permintaan per pengguna atau IP dalam 10 menit.
+Nilai default adalah 15. Materi dibatasi 30.000 karakter dan permintaan ke
+provider memiliki timeout 30 detik.
+
+## Kualitas materi
+
+- PDF mempertahankan nomor halaman sebagai rujukan sumber.
+- Rentang halaman dapat dipilih, maksimal 200 halaman dan ukuran 50 MB.
+- PDF scan tanpa teks ditolak dan perlu diproses OCR terlebih dahulu.
+- Respons AI divalidasi sebelum disimpan.
+- Flashcard dan soal dapat diedit atau dihapus dari detail materi.
+
+## Privasi data lokal
+
+Hanya data lokal tanpa pemilik yang dapat dipindahkan ke akun aktif. Cache milik
+akun lain tidak ditampilkan saat logout dan tidak dapat tersinkron ke akun yang
+berbeda.
