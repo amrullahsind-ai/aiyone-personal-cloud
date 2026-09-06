@@ -2,27 +2,31 @@
 <html lang="id">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#c77af0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#FBF3E1" />
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#12100F" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="description" content="Aiyone Personal: ubah materi jadi konsep, flashcard, quiz bertingkat, catatan berjejaring, dan jadwal review berbasis prediksi lupa." />
   <title>Aiyone Personal</title>
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="styles.css?v=aiyone-v11-ready" />
+  <link rel="icon" href="icon-192.png" sizes="192x192" type="image/png" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Poppins:wght@400;500;600;700;800&display=swap" />
+  <link rel="stylesheet" href="styles.css?v=aiyone-v15" />
 </head>
 <body>
   <div class="drawer-overlay" id="drawerOverlay" aria-hidden="true"></div>
-  <header class="mobile-topbar">
-    <button class="icon-btn" id="menuToggle" aria-label="Buka menu">☰</button>
-    <div class="mobile-title">
-      <span class="eyebrow">Aiyone</span>
-      <strong id="mobilePageTitle">Dashboard</strong>
-    </div>
-    <button class="icon-btn profile-icon" id="mobileProfileBtn" title="Profil">👤</button>
-    <button class="icon-btn" id="mobileInstallBtn" hidden title="Install">⬇</button>
-  </header>
 
-  <div class="shell">
+  <!--
+    Kerangka tetap di semua layar: satu pita berwarna di atas, lalu panel
+    konten bersudut besar yang menindihnya dari bawah. Warna pita mengikuti
+    "mode kognitif" layar aktif, disetel lewat atribut data-mode.
+  -->
+  <div class="shell" id="shell" data-mode="planning">
+
     <aside class="sidebar" id="sidebar">
-      <button class="drawer-close" id="drawerClose" aria-label="Tutup menu">×</button>
+      <button class="drawer-close" id="drawerClose" aria-label="Tutup menu" data-icon="close"></button>
       <div class="brand">
         <div class="brand-logo">A</div>
         <div>
@@ -30,14 +34,21 @@
           <p>Personal Cloud Edition</p>
         </div>
       </div>
-      <nav class="nav">
-        <button class="nav-item active" data-view="dashboard">Dashboard</button>
-        <button class="nav-item" data-view="session">Sesi Belajar</button>
-        <button class="nav-item" data-view="create">Upload / Create</button>
+      <nav class="nav" aria-label="Navigasi lengkap">
+        <span class="nav-group">Utama</span>
+        <button class="nav-item active" data-view="dashboard">Beranda</button>
+        <button class="nav-item" data-view="session">Belajar</button>
+        <button class="nav-item" data-view="focus">Fokus</button>
+        <button class="nav-item" data-view="notes">Catatan</button>
+        <button class="nav-item" data-view="analytics">Progres</button>
+
+        <span class="nav-group">Materi</span>
         <button class="nav-item" data-view="library">Library</button>
+        <button class="nav-item" data-view="create">Tambah materi</button>
+
+        <span class="nav-group">Lainnya</span>
         <button class="nav-item" data-view="review">Review</button>
         <button class="nav-item" data-view="teach">Teaching Mode</button>
-        <button class="nav-item" data-view="analytics">Analytics</button>
         <button class="nav-item" data-view="settings">Settings</button>
       </nav>
       <div class="sync-card" id="syncCard">
@@ -46,247 +57,284 @@
       </div>
     </aside>
 
-    <main class="main">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">Your personal learning space</p>
-          <h2 id="pageTitle">Dashboard</h2>
+    <div class="stage">
+      <!-- Pita berwarna. Isinya sama di semua layar; warnanya yang berubah. -->
+      <header class="topband" id="band">
+        <div class="band-row">
+          <button class="round-ctrl" id="menuToggle" aria-label="Buka menu" data-icon="menu"></button>
+          <div class="band-title">
+            <span class="eyebrow" id="bandEyebrow">Ruang belajarmu</span>
+            <strong id="pageTitle">Beranda</strong>
+          </div>
+          <button class="round-ctrl" id="mobileInstallBtn" hidden aria-label="Install aplikasi" data-icon="install"></button>
+          <button class="avatar-btn" id="profileBtn" aria-label="Buka profil"><span id="profileInitial">?</span></button>
         </div>
-        <div class="top-actions">
-          <button class="profile-pill" id="profileBtn" type="button"><span class="avatar-dot" id="profileInitial">?</span><span id="profileLabel">Login</span></button>
-          <button class="ghost" id="installBtn" hidden>Install</button>
-          <button class="primary" data-jump="create">+ Materi</button>
-        </div>
+        <p class="band-sub" id="bandSub">&mdash;</p>
       </header>
 
-      <section class="view active" id="dashboard">
-        <div class="overview-heading">
-          <div>
-            <span class="eyebrow">Ringkasan belajar</span>
-            <h3>Learning<br />Overview</h3>
-          </div>
-          <span class="period-pill">7 hari terakhir</span>
-        </div>
+      <main class="main">
 
-        <div class="overview-layout">
-          <article class="panel weekly-panel">
-            <div class="weekly-head">
-              <div><span class="panel-kicker">Aktivitas</span><h3>Waktu belajar</h3></div>
-              <strong id="weeklyTotal">0 menit</strong>
-            </div>
-            <div class="weekly-chart" aria-label="Aktivitas belajar tujuh hari terakhir">
-              <div class="chart-day"><i id="weekBar0"></i><span>Sen</span></div>
-              <div class="chart-day"><i id="weekBar1"></i><span>Sel</span></div>
-              <div class="chart-day"><i id="weekBar2"></i><span>Rab</span></div>
-              <div class="chart-day"><i id="weekBar3"></i><span>Kam</span></div>
-              <div class="chart-day"><i id="weekBar4"></i><span>Jum</span></div>
-              <div class="chart-day"><i id="weekBar5"></i><span>Sab</span></div>
-              <div class="chart-day"><i id="weekBar6" class="active"></i><span>Min</span></div>
-            </div>
-          </article>
+        <!-- ================= BERANDA — mode analisis (cream) ================= -->
+        <section class="view sheet active" id="dashboard">
+          <h2 class="display-title">Rencana<br />belajar</h2>
 
-          <div class="overview-side">
-            <article class="summary-card lilac">
-              <span class="summary-icon">01</span>
-              <p>Materi & konsep</p>
-              <strong><span id="ovMaterials">0</span> / <span id="ovConcepts">0</span></strong>
+          <div class="medallions">
+            <article class="medallion">
+              <span class="medallion-icon teal" data-icon="book"></span>
+              <b id="ovMaterials">0</b><small>Materi</small>
             </article>
-            <article class="summary-card blue">
-              <span class="summary-icon">02</span>
-              <p>Rata-rata mastery</p>
+            <article class="medallion">
+              <span class="medallion-icon coral" data-icon="check"></span>
+              <b id="ovMastered">0</b><small>Dikuasai</small>
+            </article>
+            <article class="medallion">
+              <span class="medallion-icon plain" data-icon="refresh"></span>
+              <b id="mDue">0</b><small>Perlu ulang</small>
+            </article>
+          </div>
+
+          <div class="hero-metric">
+            <div>
               <strong id="masteryAverage">0%</strong>
-            </article>
+              <span>Rata-rata penguasaan</span>
+            </div>
+            <button class="linkout" data-jump="analytics" type="button">
+              <span>Rincian</span><i data-icon="linkout"></i>
+            </button>
           </div>
-        </div>
 
-        <div class="streak-strip">
-          <span class="streak-mark">&#9889;</span>
-          <div><small>Konsistensi belajar</small><strong><span id="ovStreak">0</span> hari berturut-turut</strong></div>
-          <span class="streak-arrow">&rarr;</span>
-        </div>
+          <figure class="chart-card">
+            <figcaption>
+              <span>7 hari terakhir</span>
+              <span id="chartSource">perkiraan dari review</span>
+            </figcaption>
+            <div class="line-chart" id="progressChart" role="img" aria-label="Grafik waktu belajar"></div>
+            <div class="chart-total"><b id="weeklyTotal">0 menit</b><span>total waktu belajar</span></div>
+          </figure>
 
-        <div class="dashboard-intro">
-          <div>
-            <span class="eyebrow">Learning overview</span>
-            <h3>Belajar lebih terarah,<br />ingat lebih lama.</h3>
-            <p>Aiyone memilih langkah belajar berikutnya berdasarkan progres dan prediksi lupa.</p>
+          <div class="streak-strip">
+            <span class="streak-mark" data-icon="bolt"></span>
+            <div><small>Konsistensi belajar</small><strong><span id="ovStreak">0</span> hari berturut-turut</strong></div>
+            <span class="streak-arrow" data-icon="arrowRight"></span>
           </div>
-          <button class="primary" data-jump="session">Mulai belajar <span aria-hidden="true">&rarr;</span></button>
-        </div>
 
-        <div class="metrics">
-          <article><span>Materi</span><strong id="mMaterials">0</strong></article>
-          <article><span>Konsep</span><strong id="mConcepts">0</strong></article>
-          <article><span>Due Review</span><strong id="mDue">0</strong></article>
-          <article><span>Smart Streak</span><strong id="mStreak">0🔥</strong></article>
-        </div>
-
-        <div class="grid two">
-          <article class="panel">
-            <div class="panel-head">
-              <div>
-                <h3>Aksi Hari Ini</h3>
-                <p class="muted">Aiyone memilih materi berdasarkan prediksi lupa, bukan sekadar urutan upload.</p>
-              </div>
+          <section class="block">
+            <div class="block-head">
+              <div><h3>Aksi Hari Ini</h3><p>Dipilih dari prediksi lupa, bukan urutan upload.</p></div>
               <span class="badge" id="todayBadge">Belum ada data</span>
             </div>
             <div id="todayActions" class="stack empty">Upload materi untuk memulai learning loop.</div>
-          </article>
+          </section>
 
-          <article class="panel">
-            <div class="panel-head">
-              <div>
-                <h3>Peta Memori</h3>
-                <p class="muted">Prediksi retensi dari riwayat benar/salah dan interval review.</p>
-              </div>
+          <section class="block">
+            <div class="block-head">
+              <div><h3>Peta Memori</h3><p>Prediksi retensi dari riwayat benar/salah.</p></div>
             </div>
             <div class="memory-bars">
               <div><span>Kuat</span><div class="bar"><i id="barStrong"></i></div><b id="txtStrong">0%</b></div>
               <div><span>Sedang</span><div class="bar"><i id="barMedium"></i></div><b id="txtMedium">0%</b></div>
               <div><span>Rawan lupa</span><div class="bar"><i id="barWeak"></i></div><b id="txtWeak">0%</b></div>
             </div>
-          </article>
-        </div>
+          </section>
 
-        <article class="panel">
-          <div class="panel-head">
-            <div>
-              <h3>Materi Terbaru</h3>
-              <p class="muted">Buka materi untuk melihat konsep, flashcard, quiz, dan status review.</p>
+          <section class="block">
+            <div class="block-head">
+              <div><h3>Materi Terbaru</h3><p>Buka untuk konsep, flashcard, dan quiz.</p></div>
+              <button class="linkout" data-jump="library" type="button"><span>Semua</span><i data-icon="linkout"></i></button>
             </div>
-            <button class="ghost small" data-jump="library">Lihat semua</button>
-          </div>
-          <div id="recentList" class="cards empty">Belum ada materi.</div>
-        </article>
-      </section>
+            <div id="recentList" class="cards empty">Belum ada materi.</div>
+          </section>
+        </section>
 
-      <section class="view" id="session">
-        <article class="panel session-panel">
-          <div class="panel-head">
+        <!-- ================= BELAJAR — mode aktif (coral) ================= -->
+        <section class="view sheet" id="session">
+          <div class="sheet-head">
             <div>
-              <span class="badge soft">Guided Learning Loop</span>
-              <h3>Sesi Belajar Terarah</h3>
-              <p class="muted">Aiyone menuntun alur: baca bagian kecil → active recall → flashcard → quiz → teaching mode.</p>
+              <span class="section-label">Guided learning loop</span>
+              <h2>Sesi Belajar</h2>
             </div>
-            <select id="sessionMaterial" class="search"></select>
+            <button class="linkout" data-jump="teach" type="button"><span>Teaching</span><i data-icon="linkout"></i></button>
           </div>
+          <label class="picker">Materi
+            <select id="sessionMaterial"></select>
+          </label>
           <div id="sessionBox" class="session-box empty">Pilih materi untuk mulai sesi belajar.</div>
-        </article>
-      </section>
+        </section>
 
-      <section class="view" id="create">
-        <article class="panel">
-          <div class="panel-head">
+        <!-- ================= FOKUS — pemutar (pita bertumpuk sendiri) ======= -->
+        <section class="view bare" id="focus">
+          <div id="focusBox" class="bands"></div>
+        </section>
+
+        <!-- ================= CATATAN — mode analisis (cream) =============== -->
+        <section class="view sheet" id="notes">
+          <div class="sheet-head">
             <div>
-              <h3>Masukkan Materi</h3>
-              <p class="muted">Upload PDF teks atau tempel catatan. AI akan memecahnya jadi konsep, flashcard, quiz bertingkat, dan jadwal review.</p>
+              <span class="section-label">Zettelkasten</span>
+              <h2>Catatan Berjejaring</h2>
             </div>
-            <span class="badge">Concept Extractor</span>
+            <button class="pill-cta" id="newNoteBtn" type="button">+ Catatan</button>
           </div>
+          <p class="lead">Satu catatan, satu gagasan. Nilainya dari menautkannya dan menjelaskan kenapa.</p>
+
+          <div class="note-stats">
+            <article><span>Catatan</span><b id="nTotal">0</b></article>
+            <article><span>Tautan</span><b id="nLinks">0</b></article>
+            <article><span>Belum tertaut</span><b id="nOrphan">0</b></article>
+          </div>
+
+          <div class="block-head">
+            <div>
+              <h3>Graf catatan</h3>
+              <p class="lead">Lingkaran besar = banyak tautan. Lingkaran kosong = belum tertaut.</p>
+            </div>
+          </div>
+          <div class="graph-box" id="noteGraph"></div>
+
+          <input id="noteSearch" class="search" type="search" placeholder="Cari judul, isi, atau tag..." />
+          <div id="notesList" class="cards empty">Belum ada catatan.</div>
+          <article id="noteDetail" class="drill" hidden></article>
+        </section>
+
+        <!-- ================= PROGRES — mode status (teal) ================== -->
+        <section class="view bare" id="analytics">
+          <div class="board">
+            <div class="board-top">
+              <button class="round-ctrl" data-jump="dashboard" type="button" aria-label="Kembali ke beranda" data-icon="back"></button>
+              <button class="round-ctrl" data-jump="library" type="button" aria-label="Buka library" data-icon="grid"></button>
+            </div>
+            <h2 class="display-title on-color">Peringkat<br />konsep</h2>
+
+            <div class="segmented" id="rankRange" role="tablist" aria-label="Rentang peringkat">
+              <button class="seg active" data-range="week" role="tab" aria-selected="true">Minggu ini</button>
+              <button class="seg" data-range="all" role="tab" aria-selected="false">Semua</button>
+            </div>
+
+            <div id="conceptRanking" class="rank-list empty">Belum ada konsep yang diuji.</div>
+            <article class="spotlight" id="rankSpotlight" hidden></article>
+          </div>
+
+          <div class="sheet inner">
+            <div class="metrics">
+              <article><span>Review Selesai</span><strong id="aReviews">0</strong></article>
+              <article><span>Akurasi</span><strong id="aAccuracy">0%</strong></article>
+              <article><span>Teaching</span><strong id="aTeaching">0</strong></article>
+              <article><span>Konsep Rawan</span><strong id="aWeak">0</strong></article>
+            </div>
+
+            <section class="block">
+              <div class="block-head">
+                <div><h3>Fokus &amp; Catatan</h3><p>Waktu fokus sungguhan dan kesehatan jaringan catatan.</p></div>
+              </div>
+              <div id="focusSummary" class="mini-stats"></div>
+              <div id="noteSummary" class="mini-stats"></div>
+            </section>
+
+            <section class="block">
+              <div class="block-head">
+                <div><h3>Konsep Paling Perlu Diperbaiki</h3><p>Dari kartu due, retensi rendah, atau sering gagal.</p></div>
+              </div>
+              <div id="weakConceptList" class="stack empty">Belum ada data review.</div>
+            </section>
+
+            <section class="block">
+              <div class="block-head">
+                <div><h3>Aktivitas Terbaru</h3><p>Ringkasan review dan teaching mode terakhir.</p></div>
+                <button class="linkout" data-jump="settings" type="button"><span>Settings</span><i data-icon="linkout"></i></button>
+              </div>
+              <div id="activityList" class="stack empty">Belum ada aktivitas.</div>
+            </section>
+          </div>
+        </section>
+
+        <!-- ================= LIBRARY — drill-down (cream) ================== -->
+        <section class="view sheet" id="library">
+          <div class="sheet-head">
+            <div>
+              <span class="section-label">Koleksi</span>
+              <h2>Library</h2>
+            </div>
+            <button class="pill-cta" data-jump="create" type="button">+ Materi</button>
+          </div>
+          <input id="searchInput" class="search" type="search" placeholder="Cari materi / konsep..." />
+          <div id="libraryList" class="cards empty">Belum ada materi.</div>
+          <article id="detailPanel" class="drill" hidden></article>
+        </section>
+
+        <!-- ================= TAMBAH MATERI — drill-down (coral) ============ -->
+        <section class="view sheet" id="create">
+          <div class="sheet-head">
+            <div>
+              <span class="section-label">Concept extractor</span>
+              <h2>Materi Baru</h2>
+            </div>
+          </div>
+          <p class="lead">Upload PDF teks atau tempel catatan. AI memecahnya jadi konsep, flashcard, quiz bertingkat, dan jadwal review.</p>
 
           <label class="dropzone" for="pdfInput">
             <input id="pdfInput" type="file" accept="application/pdf" />
             <strong>Upload PDF</strong>
-            <span>PDF teks bisa diekstrak. PDF scan/foto perlu OCR dan belum sempurna di versi ini.</span>
+            <span>PDF teks bisa diekstrak. PDF scan/foto perlu OCR.</span>
           </label>
           <label class="pdf-range-field">Halaman yang diproses, opsional
             <input id="pdfPageRange" placeholder="Contoh: 1-12 atau 2,4,8-10" />
-            <small class="muted">Kosongkan untuk membaca semua halaman, maksimal 200 halaman.</small>
+            <small class="muted">Kosongkan untuk semua halaman, maksimal 200.</small>
           </label>
 
           <div class="field-row">
             <label>Judul manual, opsional<input id="titleInput" placeholder="Misal: Psikologi Pendidikan Bab 2" /></label>
             <label>Kategori<input id="categoryInput" placeholder="Kuliah / Hafalan / Proposal" /></label>
           </div>
-          <label>Teks materi<textarea id="textInput" rows="11" placeholder="Tempel materi di sini kalau tidak pakai PDF..."></textarea></label>
-          <div class="action-row">
-            <button class="primary" id="generateBtn">Generate Learning Pack</button>
+          <label>Teks materi<textarea id="textInput" rows="10" placeholder="Tempel materi di sini kalau tidak pakai PDF..."></textarea></label>
+          <div class="action-row wrap">
+            <button class="pill-cta" id="generateBtn">Generate Learning Pack</button>
             <button class="ghost" id="saveManualBtn">Simpan tanpa AI</button>
           </div>
           <div id="statusBox" class="status" hidden></div>
-        </article>
-      </section>
+        </section>
 
-      <section class="view" id="library">
-        <article class="panel">
-          <div class="panel-head">
+        <!-- ================= REVIEW — drill-down (coral) =================== -->
+        <section class="view sheet" id="review">
+          <div class="sheet-head">
             <div>
-              <h3>Library</h3>
-              <p class="muted">Materi tersimpan di local database atau Supabase kalau cloud aktif.</p>
+              <span class="section-label">Retrieval practice</span>
+              <h2>Review Hari Ini</h2>
             </div>
-            <input id="searchInput" class="search" type="search" placeholder="Cari materi / konsep..." />
-          </div>
-          <div id="libraryList" class="cards empty">Belum ada materi.</div>
-        </article>
-        <article id="detailPanel" class="panel detail" hidden></article>
-      </section>
-
-      <section class="view" id="review">
-        <article class="panel">
-          <div class="panel-head">
-            <div>
-              <h3>Review Hari Ini</h3>
-              <p class="muted">Jawab dulu di kepala, baru buka jawaban. Rating menentukan kapan kartu muncul lagi.</p>
-            </div>
-            <button class="ghost small" id="refreshBtn">Refresh</button>
+            <button class="round-ctrl solid" id="refreshBtn" type="button" aria-label="Muat ulang kartu" data-icon="refresh"></button>
           </div>
           <div id="reviewBox" class="review empty">Belum ada kartu due.</div>
-        </article>
-      </section>
+        </section>
 
-      <section class="view" id="teach">
-        <article class="panel">
-          <div class="panel-head">
+        <!-- ================= TEACHING — drill-down (coral) ================= -->
+        <section class="view sheet" id="teach">
+          <div class="sheet-head">
             <div>
-              <h3>Teaching Mode</h3>
-              <p class="muted">Aiyone menilai penjelasanmu dengan rubrik: akurasi, kelengkapan, contoh, dan miskonsepsi.</p>
+              <span class="section-label">Rubric-based</span>
+              <h2>Teaching Mode</h2>
             </div>
-            <span class="badge">Rubric-based</span>
           </div>
+          <p class="lead">Aiyone menilai penjelasanmu dengan rubrik: akurasi, kelengkapan, contoh, dan miskonsepsi.</p>
           <div class="field-row">
             <label>Pilih materi<select id="teachMaterial"></select></label>
-            <label>Fokus konsep, opsional<input id="teachFocus" placeholder="Misal: reinforcement, cognitive load" /></label>
+            <label>Fokus konsep, opsional<input id="teachFocus" placeholder="Misal: cognitive load" /></label>
           </div>
-          <label>Penjelasanmu<textarea id="teachAnswer" rows="10" placeholder="Jelaskan seolah kamu mengajar temanmu..."></textarea></label>
-          <button class="primary" id="teachBtn">Nilai Pemahaman</button>
+          <label>Penjelasanmu<textarea id="teachAnswer" rows="9" placeholder="Jelaskan seolah kamu mengajar temanmu..."></textarea></label>
+          <button class="pill-cta" id="teachBtn">Nilai Pemahaman</button>
           <div id="teachOutput" class="ai-box" hidden></div>
-        </article>
-      </section>
+        </section>
 
-      <section class="view" id="analytics">
-        <div class="metrics analytics-metrics">
-          <article><span>Review Selesai</span><strong id="aReviews">0</strong></article>
-          <article><span>Akurasi Review</span><strong id="aAccuracy">0%</strong></article>
-          <article><span>Teaching Sessions</span><strong id="aTeaching">0</strong></article>
-          <article><span>Konsep Rawan</span><strong id="aWeak">0</strong></article>
-        </div>
-        <div class="grid two">
-          <article class="panel">
-            <div class="panel-head">
-              <div>
-                <h3>Konsep Paling Perlu Diperbaiki</h3>
-                <p class="muted">Diurutkan dari kartu yang due, retensi rendah, atau sering gagal.</p>
-              </div>
+        <!-- ================= SETTINGS — drill-down (teal) ================== -->
+        <section class="view sheet" id="settings">
+          <div class="sheet-head">
+            <div>
+              <span class="section-label">Konfigurasi</span>
+              <h2>Settings</h2>
             </div>
-            <div id="weakConceptList" class="stack empty">Belum ada data review.</div>
-          </article>
-          <article class="panel">
-            <div class="panel-head">
-              <div>
-                <h3>Aktivitas Terbaru</h3>
-                <p class="muted">Ringkasan review dan teaching mode terakhir.</p>
-              </div>
-            </div>
-            <div id="activityList" class="stack empty">Belum ada aktivitas.</div>
-          </article>
-        </div>
-      </section>
+          </div>
 
-      <section class="view" id="settings">
-        <div class="grid two">
-          <article class="panel">
+          <section class="block">
             <h3>AI Server</h3>
-            <p class="muted">API key AI disimpan di server lokal/Vercel, bukan di browser. Isi file <code>.env</code> atau Environment Variables di Vercel.</p>
+            <p class="lead">API key disimpan di server lokal/Vercel, bukan di browser.</p>
             <label>Provider utama
               <select id="providerSelect">
                 <option value="gemini">Gemini</option>
@@ -299,38 +347,64 @@
             <label>Model OpenRouter<input id="openrouterModel" value="google/gemini-2.0-flash-exp:free" /></label>
             <div class="field-row">
               <label>Mastery threshold (%)<input id="masteryThreshold" type="number" min="50" max="95" value="70" /></label>
-              <label>Target retensi review<input id="targetRetention" type="number" min="0.70" max="0.95" step="0.01" value="0.85" /></label>
+              <label>Target retensi<input id="targetRetention" type="number" min="0.70" max="0.95" step="0.01" value="0.85" /></label>
             </div>
-            <button class="primary" id="saveAiSettings">Simpan AI & Memory Settings</button>
-            <button class="ghost" id="testAiBtn">Tes AI Server</button>
-          </article>
+          </section>
 
-          <article class="panel">
-            <h3>Backup & Migrasi</h3>
-            <p class="muted">Backup tetap disediakan supaya kamu tidak bergantung penuh pada browser/cloud.</p>
+          <section class="block">
+            <h3>Pomodoro</h3>
+            <div class="field-row">
+              <label>Durasi fokus (menit)<input id="focusMinutes" type="number" min="1" max="180" value="25" /></label>
+              <label>Istirahat pendek<input id="shortBreakMinutes" type="number" min="1" max="60" value="5" /></label>
+            </div>
+            <div class="field-row">
+              <label>Istirahat panjang<input id="longBreakMinutes" type="number" min="1" max="90" value="15" /></label>
+              <label>Istirahat panjang tiap<input id="longBreakEvery" type="number" min="2" max="8" value="4" /></label>
+            </div>
+            <label class="checkbox-row"><input id="pomodoroSound" type="checkbox" checked /> Bunyikan nada saat sesi selesai</label>
+            <label class="checkbox-row"><input id="pomodoroAutoBreak" type="checkbox" checked /> Mulai istirahat otomatis</label>
+            <div class="action-row wrap">
+              <button class="pill-cta" id="saveAiSettings">Simpan Semua Settings</button>
+              <button class="ghost" id="testAiBtn">Tes AI Server</button>
+            </div>
+          </section>
+
+          <section class="block">
+            <h3>Backup &amp; Migrasi</h3>
+            <p class="lead">Backup supaya kamu tidak bergantung penuh pada browser atau cloud.</p>
             <div class="action-row wrap">
               <button class="ghost" id="exportBtn">Export JSON</button>
               <label class="ghost import-label" for="importInput">Import JSON</label>
               <input id="importInput" type="file" accept="application/json" hidden />
               <button class="danger" id="resetBtn">Reset local data</button>
             </div>
-          </article>
+          </section>
 
-          <article class="panel">
+          <section class="block">
             <h3>Memory Engine</h3>
-            <p class="muted">Memory Engine v2 memakai rating, confidence, waktu jawab, stability, difficulty, dan target retensi. Ini lebih dekat ke pendekatan FSRS daripada interval statis.</p>
+            <p class="lead">Memakai rating, confidence, waktu jawab, stability, difficulty, dan target retensi &mdash; lebih dekat ke FSRS daripada interval statis.</p>
             <div class="mini-table">
-              <span>Lupa</span><b>stability turun, due ±10 menit</b>
-              <span>Sulit</span><b>interval pendek + difficulty naik</b>
+              <span>Lupa</span><b>stability turun, due &plusmn;10 menit</b>
+              <span>Sulit</span><b>interval pendek, difficulty naik</b>
               <span>Paham</span><b>stability naik sesuai confidence</b>
               <span>Mudah</span><b>stability naik panjang</b>
               <span>Pre-test</span><b>diagnosis awal</b>
               <span>Post-test</span><b>bukti mastery</b>
             </div>
-          </article>
-        </div>
-      </section>
-    </main>
+          </section>
+        </section>
+
+      </main>
+    </div>
+
+    <!-- Lima tujuan utama. Sisanya dicapai lewat drill-down, bukan tab. -->
+    <nav class="bottom-nav" aria-label="Navigasi utama">
+      <button class="nav-item active" data-view="dashboard"><span data-icon="home"></span>Beranda</button>
+      <button class="nav-item" data-view="session"><span data-icon="play"></span>Belajar</button>
+      <button class="nav-item" data-view="focus"><span data-icon="clock"></span>Fokus</button>
+      <button class="nav-item" data-view="notes"><span data-icon="notes"></span>Catatan</button>
+      <button class="nav-item" data-view="analytics"><span data-icon="trophy"></span>Progres</button>
+    </nav>
   </div>
 
   <template id="materialCardTpl">
@@ -342,37 +416,36 @@
       </div>
       <div class="card-actions">
         <button class="ghost small open">Buka</button>
-        <button class="primary small session-start">Sesi</button>
+        <button class="pill-cta small session-start">Sesi</button>
         <button class="ghost small quiz">Quiz</button>
         <button class="danger small del">Hapus</button>
       </div>
     </article>
   </template>
 
-
   <div class="profile-modal" id="profileModal" aria-hidden="true">
     <div class="profile-card" role="dialog" aria-modal="true" aria-labelledby="profileTitle">
       <div class="profile-head">
         <div>
-          <span class="eyebrow">Aiyone Account</span>
-          <h3 id="profileTitle">Profil & Sinkronisasi</h3>
-          <p id="authStatus" class="muted">Mengecek status akun...</p>
+          <span class="section-label">Aiyone Account</span>
+          <h3 id="profileTitle">Profil &amp; Sinkronisasi</h3>
+          <p id="authStatus" class="lead">Mengecek status akun...</p>
         </div>
-        <button class="icon-btn" id="profileClose" aria-label="Tutup profil">×</button>
+        <button class="round-ctrl solid" id="profileClose" aria-label="Tutup profil" data-icon="close"></button>
       </div>
 
       <div class="cloud-state" id="cloudSetupHint">
-        Cloud database dibaca otomatis dari server. Kalau belum aktif, isi Environment Variables di Vercel: <b>SUPABASE_URL</b> dan <b>SUPABASE_ANON_KEY</b>.
+        Cloud dibaca otomatis dari server. Kalau belum aktif, isi <b>SUPABASE_URL</b> dan <b>SUPABASE_ANON_KEY</b> di Environment Variables Vercel.
       </div>
 
       <div id="profileLoginArea" class="profile-login">
         <label>Email<input id="authEmail" type="email" placeholder="email kamu" autocomplete="email" /></label>
         <label>Password<input id="authPassword" type="password" placeholder="min. 6 karakter" autocomplete="current-password" /></label>
         <div class="action-row wrap">
-          <button class="primary" id="loginBtn">Login</button>
+          <button class="pill-cta" id="loginBtn">Login</button>
           <button class="ghost" id="signUpBtn">Buat akun</button>
         </div>
-        <p class="muted small-note">Setelah login, Aiyone otomatis sync data lokal ke cloud.</p>
+        <p class="lead small-note">Setelah login, data lokal otomatis sync ke cloud.</p>
       </div>
 
       <div id="profileLoggedArea" class="profile-logged" hidden>
@@ -380,11 +453,11 @@
           <div class="avatar-large" id="profileAvatarLarge">A</div>
           <div>
             <b id="profileEmail">-</b>
-            <p class="muted" id="profileCloudStatus">Cloud aktif. Data tersinkron otomatis.</p>
+            <p class="lead" id="profileCloudStatus">Cloud aktif. Data tersinkron otomatis.</p>
           </div>
         </div>
         <div class="action-row wrap">
-          <button class="ghost" id="syncLocalBtn">Sync ulang local → cloud</button>
+          <button class="ghost" id="syncLocalBtn">Sync ulang local &rarr; cloud</button>
           <button class="danger" id="logoutBtn">Logout</button>
         </div>
       </div>
@@ -392,18 +465,26 @@
   </div>
 
   <div class="quiz-modal" id="quizModal" aria-hidden="true">
-    <div class="quiz-modal-card" id="quizModalCard"></div>
+    <div class="quiz-modal-card" id="quizModalCard" role="dialog" aria-modal="true" aria-label="Sesi latihan"></div>
   </div>
 
-  <nav class="bottom-nav" aria-label="Navigasi utama">
-    <button class="nav-item active" data-view="dashboard"><span>⌂</span>Home</button>
-    <button class="nav-item" data-view="session"><span>▶</span>Belajar</button>
-    <button class="nav-item" data-view="create"><span>＋</span>Materi</button>
-    <button class="nav-item" data-view="review"><span>↻</span>Review</button>
-  </nav>
+  <div class="toast-host" id="toastHost" role="status" aria-live="polite" aria-atomic="false"></div>
+
+  <div class="ask-modal" id="askModal" aria-hidden="true">
+    <div class="ask-card" role="alertdialog" aria-modal="true" aria-labelledby="askTitle" aria-describedby="askMessage">
+      <h3 id="askTitle">Konfirmasi</h3>
+      <p id="askMessage"></p>
+      <div class="action-row wrap ask-actions">
+        <button class="pill-cta" id="askConfirm">Lanjut</button>
+        <button class="ghost" id="askCancel">Batal</button>
+      </div>
+    </div>
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-  <script src="app.js?v=aiyone-v11-ready"></script>
+  <script src="lib/aiyone-icons.js?v=aiyone-v15"></script>
+  <script src="lib/aiyone-core.js?v=aiyone-v15"></script>
+  <script src="app.js?v=aiyone-v15"></script>
 </body>
 </html>
