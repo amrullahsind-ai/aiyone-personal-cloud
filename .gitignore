@@ -1,0 +1,23 @@
+# Rahasia. Jangan pernah commit file ini.
+.env
+.env.*
+!.env.example
+
+# Dependency & build
+node_modules/
+dist/
+build/
+
+# Vercel
+.vercel/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+.idea/
+.vscode/
+
+# Backup lokal Aiyone
+aiyone-backup-*.json

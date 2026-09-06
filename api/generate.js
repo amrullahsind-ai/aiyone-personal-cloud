@@ -5,10 +5,20 @@ const DEFAULTS = {
 };
 const RATE_WINDOW_MS = 10 * 60 * 1000;
 const RATE_MAX = Number(process.env.AI_RATE_LIMIT || 15);
+const RATE_MAX_KEYS = 5000;
+
+// Anggaran waktu untuk SATU request, termasuk seluruh rantai fallback provider.
+// vercel.json membatasi fungsi ini di 30 detik; kalau tiap provider diberi
+// timeout 30 detik sendiri-sendiri, rantai 3 provider bisa menembus batas itu
+// dan fungsi mati tanpa respons yang berarti.
+const TIME_BUDGET_MS = Math.max(5000, Number(process.env.AI_TIME_BUDGET_MS || 25000));
+const MIN_PROVIDER_MS = 6000;
+const MAX_PROVIDER_MS = 20000;
+
 const rateBuckets = new Map();
 
 function fetchTimed(url, options = {}, timeoutMs = 30000) {
-  return fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) });
+  return fetch(url, { ...options, signal: AbortSignal.timeout(Math.max(1000, timeoutMs)) });
 }
 
 async function readBody(req) {
@@ -34,8 +44,16 @@ function requestIp(req) {
   return String(req.headers?.["x-forwarded-for"] || req.socket?.remoteAddress || "unknown").split(",")[0].trim();
 }
 
+/**
+ * Batas ini in-memory, jadi TIDAK mengikat di serverless multi-instance:
+ * setiap instance punya salinan sendiri dan hilang saat cold start. Ini rem
+ * darurat terhadap klik ganda dan loop yang lepas kendali, bukan kuota yang
+ * sungguh-sungguh. Untuk batas yang benar-benar berlaku, pindahkan penghitung
+ * ini ke Redis atau tabel Supabase.
+ */
 function enforceRateLimit(key) {
   const now = Date.now();
+  pruneRateBuckets(now);
   const current = rateBuckets.get(key);
   if (!current || now - current.startedAt >= RATE_WINDOW_MS) {
     rateBuckets.set(key, { startedAt: now, count: 1 });
@@ -45,6 +63,22 @@ function enforceRateLimit(key) {
   if (current.count > RATE_MAX) {
     const err = new Error("Batas penggunaan AI tercapai. Coba lagi beberapa menit."); err.status = 429; throw err;
   }
+}
+
+// Tanpa ini, Map terus tumbuh selama proses hidup (bocor di server lokal
+// yang dibiarkan jalan berhari-hari).
+function pruneRateBuckets(now = Date.now()) {
+  if (rateBuckets.size < RATE_MAX_KEYS / 2) {
+    for (const [key, bucket] of rateBuckets) {
+      if (now - bucket.startedAt >= RATE_WINDOW_MS) rateBuckets.delete(key);
+    }
+    return;
+  }
+  for (const [key, bucket] of rateBuckets) {
+    if (now - bucket.startedAt >= RATE_WINDOW_MS) rateBuckets.delete(key);
+    if (rateBuckets.size <= RATE_MAX_KEYS / 2) break;
+  }
+  while (rateBuckets.size > RATE_MAX_KEYS) rateBuckets.delete(rateBuckets.keys().next().value);
 }
 
 async function verifyAuth(req) {
@@ -59,9 +93,14 @@ async function verifyAuth(req) {
   if (!authorization.startsWith("Bearer ")) {
     const err = new Error("Login diperlukan untuk menggunakan AI."); err.status = 401; throw err;
   }
-  const res = await fetchTimed(`${supabaseUrl.replace(/\/+$/, "")}/auth/v1/user`, {
-    headers: { Authorization: authorization, apikey: anonKey }
-  }, 10000);
+  let res;
+  try {
+    res = await fetchTimed(`${supabaseUrl.replace(/\/+$/, "")}/auth/v1/user`, {
+      headers: { Authorization: authorization, apikey: anonKey }
+    }, 8000);
+  } catch (_) {
+    const err = new Error("Tidak bisa memverifikasi sesi login. Coba lagi."); err.status = 503; throw err;
+  }
   const user = await res.json().catch(() => ({}));
   if (!res.ok || !user.id) {
     const err = new Error("Sesi login tidak valid atau sudah kedaluwarsa."); err.status = 401; throw err;
@@ -122,6 +161,7 @@ function validateResult(type, result, payload = {}) {
 function send(res, status, data) {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
   res.end(JSON.stringify(data));
 }
 
@@ -181,6 +221,8 @@ Aturan kualitas psikologi pendidikan:
 - Flashcard harus pendek, spesifik, dan menguji ingatan aktif. Jangan terlalu generik.
 - Quiz harus bertingkat: definition, understanding, application, analysis. Sertakan soal miskonsepsi/diagnostik.
 - Buat quiz minimal 8 jika materi cukup, dan setiap quiz harus punya 4 opsi.
+- Setiap quiz WAJIB punya answerIndex berbasis 0 yang menunjuk ke posisi jawaban benar di dalam array options-nya sendiri. Jangan pakai penomoran mulai 1. Jangan ada dua opsi yang isinya sama.
+- Sebar posisi jawaban benar secara merata di seluruh soal. Jangan selalu menaruhnya di opsi pertama.
 - Jika teks memiliki penanda "--- Halaman N ---", setiap studySection dan concept wajib memiliki sourceRef seperti "Halaman 3". Jangan mengarang nomor halaman.
 - Semua klaim harus dapat ditelusuri ke materi pengguna. Jika materi tidak mendukung suatu klaim, jangan masukkan klaim tersebut.
 - Return ONLY valid JSON. Tidak boleh markdown, tidak boleh komentar di luar JSON.
@@ -213,31 +255,51 @@ Batas jumlah:
 - quizzes 8-16.`;
 }
 
+/**
+ * Menambahkan escape pada newline yang berada DI DALAM string JSON saja.
+ *
+ * Versi sebelumnya memakai `.replace(/\n/g, "\\n")` tanpa pandang bulu,
+ * sehingga newline antar-token ikut diubah dan menghasilkan JSON yang justru
+ * makin rusak — jalur perbaikan malah selalu gagal.
+ */
+function escapeNewlinesInsideStrings(text) {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (const ch of String(text)) {
+    if (escaped) { out += ch; escaped = false; continue; }
+    if (ch === "\\") { out += ch; escaped = true; continue; }
+    if (ch === '"') { inString = !inString; out += ch; continue; }
+    if (inString && (ch === "\n" || ch === "\r")) { out += "\\n"; continue; }
+    if (inString && ch === "\t") { out += "\\t"; continue; }
+    out += ch;
+  }
+  return out;
+}
+
 function parseJSONMaybe(text) {
   if (typeof text !== "string") return text;
   let cleaned = text.trim()
     .replace(/^```(?:json)?/i, "")
     .replace(/```$/i, "")
-    .trim()
-    .replace(/[\u0000-\u001F]+/g, ch => ch === "\n" || ch === "\t" ? ch : " ");
+    .trim();
   const first = cleaned.indexOf("{");
   const last = cleaned.lastIndexOf("}");
   if (first >= 0 && last > first) cleaned = cleaned.slice(first, last + 1);
   try { return JSON.parse(cleaned); } catch (_) {}
-  const repaired = cleaned
-    .replace(/,\s*([}\]])/g, "$1")
-    .replace(/\n/g, "\\n");
+  const repaired = escapeNewlinesInsideStrings(cleaned)
+    .replace(/,\s*([}\]])/g, "$1");
   return JSON.parse(repaired);
 }
 
-async function callProvider(provider, prompt, model, jsonMode = true) {
-  if (provider === "gemini") return callGemini(prompt, model || DEFAULTS.gemini, jsonMode);
-  if (provider === "groq") return callOpenAICompat("groq", prompt, model || DEFAULTS.groq, "https://api.groq.com/openai/v1/chat/completions", process.env.GROQ_API_KEY);
-  if (provider === "openrouter") return callOpenAICompat("openrouter", prompt, model || DEFAULTS.openrouter, "https://openrouter.ai/api/v1/chat/completions", process.env.OPENROUTER_API_KEY);
+async function callProvider(provider, prompt, model, jsonMode = true, timeoutMs = 20000) {
+  if (provider === "gemini") return callGemini(prompt, model || DEFAULTS.gemini, jsonMode, timeoutMs);
+  if (provider === "groq") return callOpenAICompat("groq", prompt, model || DEFAULTS.groq, "https://api.groq.com/openai/v1/chat/completions", process.env.GROQ_API_KEY, timeoutMs);
+  if (provider === "openrouter") return callOpenAICompat("openrouter", prompt, model || DEFAULTS.openrouter, "https://openrouter.ai/api/v1/chat/completions", process.env.OPENROUTER_API_KEY, timeoutMs);
   throw new Error(`Provider tidak dikenal: ${provider}`);
 }
 
-async function callGemini(prompt, model, jsonMode) {
+async function callGemini(prompt, model, jsonMode, timeoutMs) {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY belum diset di server/.env/Vercel.");
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
@@ -250,7 +312,7 @@ async function callGemini(prompt, model, jsonMode) {
       ...(jsonMode ? { responseMimeType: "application/json" } : {})
     }
   };
-  const res = await fetchTimed(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }, 30000);
+  const res = await fetchTimed(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }, timeoutMs);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const msg = data?.error?.message || `Gemini HTTP ${res.status}`;
@@ -261,11 +323,11 @@ async function callGemini(prompt, model, jsonMode) {
   return text;
 }
 
-async function callOpenAICompat(provider, prompt, model, url, key) {
+async function callOpenAICompat(provider, prompt, model, url, key, timeoutMs) {
   if (!key) throw new Error(`${provider.toUpperCase()}_API_KEY belum diset di server/.env/Vercel.`);
   const headers = { "Content-Type": "application/json", "Authorization": `Bearer ${key}` };
   if (provider === "openrouter") {
-    headers["HTTP-Referer"] = "http://localhost:4173";
+    headers["HTTP-Referer"] = process.env.OPENROUTER_REFERER || "http://localhost:4173";
     headers["X-Title"] = "Aiyone Personal Cloud";
   }
   const body = {
@@ -277,13 +339,13 @@ async function callOpenAICompat(provider, prompt, model, url, key) {
     temperature: 0.2,
     response_format: { type: "json_object" }
   };
-  const res = await fetchTimed(url, { method: "POST", headers, body: JSON.stringify(body) }, 30000);
+  const res = await fetchTimed(url, { method: "POST", headers, body: JSON.stringify(body) }, timeoutMs);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error?.message || `${provider} HTTP ${res.status}`);
   return data?.choices?.[0]?.message?.content || "";
 }
 
-async function repairJSON(raw, provider, model, originalType) {
+async function repairJSON(raw, provider, model, originalType, timeoutMs) {
   const repairPrompt = `
 Perbaiki teks berikut menjadi JSON valid sesuai maksudnya. Jangan ubah isi substansi kecuali perlu untuk membuat JSON valid.
 Return ONLY valid JSON tanpa markdown.
@@ -291,7 +353,7 @@ Return ONLY valid JSON tanpa markdown.
 Jenis data: ${originalType}
 Teks rusak:
 ${String(raw).slice(0, 24000)}`;
-  const fixedRaw = await callProvider(provider, repairPrompt, model, true);
+  const fixedRaw = await callProvider(provider, repairPrompt, model, true, timeoutMs);
   return parseJSONMaybe(fixedRaw);
 }
 
@@ -303,8 +365,17 @@ function hasProviderKey(provider) {
 }
 
 async function main(req, res) {
-  if (req.method && req.method.toUpperCase() === "OPTIONS") return send(res, 200, { ok: true });
-  if (req.method && req.method.toUpperCase() !== "POST") return send(res, 405, { error: "Method not allowed" });
+  if (req.method && req.method.toUpperCase() === "OPTIONS") {
+    res.setHeader("Allow", "POST, OPTIONS");
+    return send(res, 204, { ok: true });
+  }
+  if (req.method && req.method.toUpperCase() !== "POST") {
+    res.setHeader("Allow", "POST, OPTIONS");
+    return send(res, 405, { ok: false, error: "Method not allowed" });
+  }
+
+  const deadline = Date.now() + TIME_BUDGET_MS;
+  const remaining = () => deadline - Date.now();
 
   try {
     const identity = await verifyAuth(req);
@@ -329,12 +400,22 @@ async function main(req, res) {
 
     const errors = [];
     for (const provider of providers) {
+      // Berhenti mencoba provider berikutnya kalau sisa waktu sudah tidak
+      // cukup. Lebih baik pesan error yang jelas daripada fungsi mati diam.
+      if (remaining() < MIN_PROVIDER_MS) {
+        errors.push(`${provider}: dilewati, waktu request hampir habis`);
+        break;
+      }
+      const budget = Math.min(MAX_PROVIDER_MS, remaining() - 1500);
       try {
         const providerModel = provider === wanted ? model : DEFAULTS[provider];
-        const raw = await callProvider(provider, prompt, providerModel, true);
+        const raw = await callProvider(provider, prompt, providerModel, true, budget);
         let result;
         try { result = parseJSONMaybe(raw); }
-        catch (_) { result = await repairJSON(raw, provider, providerModel, type); }
+        catch (_) {
+          if (remaining() < MIN_PROVIDER_MS) throw new Error("JSON rusak dan tidak ada sisa waktu untuk memperbaikinya.");
+          result = await repairJSON(raw, provider, providerModel, type, Math.min(MAX_PROVIDER_MS, remaining() - 1000));
+        }
         const validated = validateResult(type, result, body.payload || {});
         return send(res, 200, { ok: true, provider, model: providerModel, result: validated.result, warnings: validated.warnings });
       } catch (err) {
@@ -342,11 +423,13 @@ async function main(req, res) {
         continue;
       }
     }
-    throw new Error(`Semua provider AI gagal. ${errors.join(" | ")}`);
+    const failure = new Error(`Semua provider AI gagal. ${errors.join(" | ")}`);
+    failure.status = 502;
+    throw failure;
   } catch (err) {
     return send(res, err.status || 500, { ok: false, error: err.message || String(err) });
   }
 }
 
 module.exports = main;
-module.exports._test = { validatePayload, validateResult, enforceRateLimit };
+module.exports._test = { validatePayload, validateResult, enforceRateLimit, parseJSONMaybe, escapeNewlinesInsideStrings };
